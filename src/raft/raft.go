@@ -371,6 +371,8 @@ func (rf *Raft)startReplication(term int) bool{
 	replicateToPeer:=func(peer int,args *AppendEntriesArgs){
 		 reply := &AppendEntriesReply{}
 		ok:=rf.sendAppendEntries(peer,args,reply)
+		rf.mu.Lock()
+        defer rf.mu.Unlock()
 		if !ok{
 			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Lost or crashed", peer)
 			return
