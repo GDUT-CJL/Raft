@@ -73,7 +73,7 @@ func init() {
 }
 
 func LOG(peerId int, term int, topic logTopic, format string, a ...interface{}) {
-	topicLevel := getTopicLevel(topic)
+	topicLevel := getTopicLevel(topic)// 获取日志等级
 	if logLevel <= topicLevel {
 		time := time.Since(logStart).Microseconds()
 		time /= 100
