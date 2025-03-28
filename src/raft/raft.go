@@ -34,6 +34,11 @@ const(
 	replicateInterval time.Duration = 70 * time.Millisecond
 )
 
+const (
+	InvalidIndex int = 0	// 空的日志号
+	InvalidTerm  int = 0	// 空的任期号
+)
+
 // 定义三种状态
 type Role string
 const(
@@ -144,6 +149,19 @@ func (rf *Raft)becomeLeaderLocked(){
 		rf.matchIndex[peer] = 0	//先初始化为0
 	}
 }
+
+// 找到term在Leader日志中的第一个条目的索引
+func (rf *Raft)firstLogFor(term int) int{
+	for i,entry := range rf.log{
+		if entry.Term == term{
+			return i
+		}else if entry.Term > term{
+			break
+		}
+	}
+	return InvalidIndex
+}
+
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
@@ -239,11 +257,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (PartA, PartB, PartC).
 	rf.role = Follower
-	rf.currentTerm = 0
+	rf.currentTerm = 1
 	rf.votedFor = -1
 
 	// log初始化为空，类似于一个空的头节点，避免边界的检查
-	rf.log = append(rf.log,LogEntry{})
+	rf.log = append(rf.log,LogEntry{Term:InvalidTerm})
 
 	rf.nextIndex = make([]int,len(rf.peers))
 	rf.matchIndex = make([]int,len(rf.peers))
