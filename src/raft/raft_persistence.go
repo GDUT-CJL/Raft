@@ -7,7 +7,7 @@ import(
 )
 
 func (rf *Raft) PersistStates() string{
-	return fmt.Sprintf("T:%d,voted for :%d,log(0,%d]",rf.currentTerm,rf.votedFor,len(rf.log)) 
+	return fmt.Sprintf("T:%d,voted for :%d,log(0,%d]",rf.currentTerm,rf.votedFor,rf.log.size()) 
 }
 
 // save Raft's persistent state to stable storage,
@@ -33,9 +33,9 @@ func (rf *Raft) persistLocked() {
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
-	e.Encode(rf.log)
+	rf.log.persisted(e)
 	raftstate := w.Bytes()
-	rf.persister.Save(raftstate, nil)
+	rf.persister.Save(raftstate, rf.log.snapshot)
 }
 
 // restore previously persisted state.
@@ -59,26 +59,32 @@ func (rf *Raft) readPersist(data []byte) {
 
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
+	
 	var currentTerm 	int
-	var votedFor			int
-	var log				[]LogEntry
-
 	if err := d.Decode(&currentTerm);err != nil{
 		LOG(rf.me,rf.currentTerm,DPersist,"Read currentTerm error:%v",err)
 		return
 	}
 	rf.currentTerm = currentTerm
 
+	var votedFor			int
 	if err := d.Decode(&votedFor);err != nil{
 		LOG(rf.me,rf.currentTerm,DPersist,"Read votedFor error:%v",err)
 		return
 	}
 	rf.votedFor = votedFor
 
-	if err := d.Decode(&log);err != nil{
+	// 日志的反序列化
+	if err := rf.log.readPersist(d);err != nil{
 		LOG(rf.me,rf.currentTerm,DPersist,"Read log error:%v",err)
 		return
 	}
-	rf.log = log
+	// 反序列化快照信息
+	rf.log.snapshot = rf.persister.ReadSnapshot()
+	// 如果快照的索引大于本地的提交日志的索引，则要进行更新
+	if rf.log.snapLastIdx > rf.commitIndex{
+		rf.commitIndex = rf.log.snapLastIdx
+		rf.lastApplied = rf.log.snapLastIdx
+	}
 	LOG(rf.me, rf.currentTerm, DPersist, "Read Persist %v", rf.PersistStates())
 }
