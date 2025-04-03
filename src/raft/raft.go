@@ -86,7 +86,7 @@ type Raft struct {
 	electionStart time.Time		// 选举开始标志
 	eletionTimout time.Duration	// 随机超时时间	
 
-	log         []LogEntry	// 日志
+	log         *RaftLog	// 日志
 	// only used when it is Leader,
 	// log view for each peer
 
@@ -99,6 +99,7 @@ type Raft struct {
 	lastApplied	int		// 已经被应用到状态机的最高的日志条目的索引（初始值为0，单调递增）
 	applyCond	*sync.Cond	// 唤醒提交日志索引更新
 	applyCh		chan ApplyMsg	//将 applyMsg 通过构造 Peer 时传进来的 channel 返回给应用层，即上层模块（如kv数据库）与当前的raft层的联系
+	snapAppending bool
 }
 
 // 将调用此函数的节点转换状态成为follower，任期更改为传入参数term
@@ -145,21 +146,9 @@ func (rf *Raft)becomeLeaderLocked(){
 	LOG(rf.me,rf.currentTerm,DVote,"%s->Leader,For T%d",rf.role,rf.currentTerm)
 	rf.role = Leader//成为leader
 	for peer:=0;peer < len(rf.peers); peer++{
-		rf.nextIndex[peer] = len(rf.log)// 初始化为日志长度，有效索引其实是 0 - (len -1),所以下一个是len    
+		rf.nextIndex[peer] = rf.log.size()// 初始化为日志长度，有效索引其实是 0 - (len -1),所以下一个是len    
 		rf.matchIndex[peer] = 0	//先初始化为0
 	}
-}
-
-// 找到term在Leader日志中的第一个条目的索引
-func (rf *Raft)firstLogFor(term int) int{
-	for i,entry := range rf.log{
-		if entry.Term == term{
-			return i
-		}else if entry.Term > term{
-			break
-		}
-	}
-	return InvalidIndex
 }
 
 // return currentTerm and whether this server
@@ -172,16 +161,6 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return rf.currentTerm, rf.role == Leader
-}
-
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (PartD).
-
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -203,16 +182,17 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.role != Leader{
 		return 0,0,false
 	}
-	rf.log = append(rf.log,LogEntry{
+	
+	rf.log.append(LogEntry{
 		CommandValid: true,
 		Command:      command,
 		Term:         rf.currentTerm,
 	})
 
 	// Your code here (PartB).
-	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d", len(rf.log)-1, rf.currentTerm)
+	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d", rf.log.size()-1, rf.currentTerm)
 	rf.persistLocked()
-	return len(rf.log) - 1, rf.currentTerm, true
+	return rf.log.size() - 1, rf.currentTerm, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -260,8 +240,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 1
 	rf.votedFor = -1
 
+
 	// log初始化为空，类似于一个空的头节点，避免边界的检查
-	rf.log = append(rf.log,LogEntry{Term:InvalidTerm})
+	//rf.log.append(LogEntry{Term:InvalidTerm})
+	rf.log = NewLog(InvalidIndex,InvalidTerm,nil,nil)
 
 	rf.nextIndex = make([]int,len(rf.peers))
 	rf.matchIndex = make([]int,len(rf.peers))
@@ -270,7 +252,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 	rf.applyCh = applyCh
 	rf.applyCond = sync.NewCond(&rf.mu)
-
+	rf.snapAppending = false
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	// start ticker goroutine to start elections

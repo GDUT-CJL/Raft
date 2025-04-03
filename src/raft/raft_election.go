@@ -44,8 +44,8 @@ type RequestVoteReply struct {
 /*	如果两份日志最后条目任期号不同，那么任期号大的日志更“新”；
 	如果两份日志最后条目的任期号相同，那么日志较长（日志号更大）的那个更“新” */
 func (rf *Raft) isMoreUpToDateLocked(candidateIndex, candidateTerm int) bool {
-    l := len(rf.log)
-    lastTerm, lastIndex := rf.log[l-1].Term, l-1
+    l := rf.log.size()
+    lastTerm, lastIndex := rf.log.at(l-1).Term, l-1
     LOG(rf.me, rf.currentTerm, DVote, "Compare last log, Me: [%d]T%d, Candidate: [%d]T%d", lastIndex, lastTerm, candidateIndex, candidateTerm)
     if lastTerm != candidateTerm {
             return lastTerm > candidateTerm
@@ -171,7 +171,7 @@ func (rf *Raft)startElection(term int){
 		LOG(rf.me,rf.currentTerm,DVote,"Lost Candidate to %s, abort RequestVote",rf.role)
 		return
 	}
-	l := len(rf.log)
+	l := rf.log.size()
 	for peer := 0; peer < len(rf.peers); peer++{// 对于每一个rpc节点遍历
 		if peer == rf.me{//如果是自己的话，就选票加1
 			vote++
@@ -182,7 +182,7 @@ func (rf *Raft)startElection(term int){
 			Term:rf.currentTerm,
 			CandidateId:rf.me,
 			LastLogIndex:l-1,
-			LastLogTerm:rf.log[l-1].Term,
+			LastLogTerm:rf.log.at(l-1).Term,
 		}
 		// 另起go程向其他RPC节点要票
 		go askVoteFromPeer(peer,args)

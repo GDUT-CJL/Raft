@@ -1,7 +1,6 @@
 # Raft
 Raft of Go
 
-
 ## 领导者选举
 1、状态转换（三个转换函数）
     1）becomeFollowerLocked
@@ -19,3 +18,4 @@ Raft of Go
     4）请求回应
 
 ## 日志复制
+
