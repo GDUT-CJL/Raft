@@ -22,7 +22,7 @@ var checked map[reflect.Type]bool
 type LabEncoder struct {
 	gob *gob.Encoder
 }
-
+// 创建编码器和解码器
 func NewEncoder(w io.Writer) *LabEncoder {
 	enc := &LabEncoder{}
 	enc.gob = gob.NewEncoder(w)
@@ -55,6 +55,7 @@ func (dec *LabDecoder) Decode(e interface{}) error {
 	return dec.gob.Decode(e)
 }
 
+// 注册类型以便gob识别
 func Register(value interface{}) {
 	checkValue(value)
 	gob.Register(value)
@@ -65,6 +66,7 @@ func RegisterName(name string, value interface{}) {
 	gob.RegisterName(name, value)
 }
 
+// 递归检查类型的所有字段是否大写
 func checkValue(value interface{}) {
 	checkType(reflect.TypeOf(value))
 }
@@ -119,6 +121,8 @@ func checkType(t reflect.Type) {
 // contains default values, GOB won't overwrite
 // the non-default value.
 //
+
+// 检查值是否为默认值
 func checkDefault(value interface{}) {
 	if value == nil {
 		return

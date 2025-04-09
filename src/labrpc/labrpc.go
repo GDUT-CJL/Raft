@@ -73,7 +73,7 @@ type replyMsg struct {
 	ok    bool
 	reply []byte
 }
-
+// 客户端端点，用于发起RPC调用
 type ClientEnd struct {
 	endname interface{}   // this end-point's name
 	ch      chan reqMsg   // copy of Network.endCh
@@ -83,6 +83,7 @@ type ClientEnd struct {
 // send an RPC, wait for the reply.
 // the return value indicates success; false means that
 // no reply was received from the server.
+// 发送请求并等待回复
 func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bool {
 	req := reqMsg{}
 	req.endname = e.endname
@@ -124,6 +125,7 @@ func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bo
 	}
 }
 
+// 模拟网络环境
 type Network struct {
 	mu             sync.Mutex
 	reliable       bool
@@ -138,7 +140,11 @@ type Network struct {
 	count          int32         // total RPC count, for statistics
 	bytes          int64         // total bytes send, for statistics
 }
-
+/*
+	管理客户端和服务器的连接
+	可以模拟不可靠网络（随机延迟、丢包、乱序）
+	提供统计功能（RPC计数、字节数）
+*/
 func MakeNetwork() *Network {
 	rn := &Network{}
 	rn.reliable = true
