@@ -1,5 +1,6 @@
 package raft
-
+import "strings"
+import "course/bridge"
 // 将已提交但未应用的日志发送到 applyCh，供状态机执行
 func (rf *Raft)applyTicker(){
 	for !rf.killed(){
@@ -28,13 +29,27 @@ func (rf *Raft)applyTicker(){
 		// 如果没有快照
 		if !snapAppendingApply{
 			// 将日志条目按顺序发送到 applyCh，由状态机（如 KV 存储）执行具体命令。
-			for i,entry := range entries{
-				rf.applyCh <- ApplyMsg{
-					CommandValid:entry.CommandValid,
-					Command:entry.Command,
-					CommandIndex:rf.lastApplied + 1 + i, // 注意，rf.lastApplied + 1 + i 确保索引连续（例如，lastApplied=2，entries 有 2 条，则发送索引 3 和 4）
+			// for i,entry := range entries{
+			// 	rf.applyCh <- ApplyMsg{
+			// 		CommandValid:entry.CommandValid,
+			// 		Command:entry.Command,
+			// 		CommandIndex:rf.lastApplied + 1 + i, // 注意，rf.lastApplied + 1 + i 确保索引连续（例如，lastApplied=2，entries 有 2 条，则发送索引 3 和 4）
+			// 	}
+			// }
+
+			// TODO:暂时先耦合，后面需要使用上面的方法解耦
+				for _, entry := range entries{
+					// 解析日志命令并调用C存储
+					cmd := entry.Command.(string)
+					parts := strings.Split(cmd, " ")
+					if parts[0] == "SET" && len(parts) == 3 {
+						key := parts[1]
+						value := parts[2]
+						// 调用CGO封装的Set函数
+						bridge.Set(key, value) // 确保已实现C.Set的Go桥接
+					}
+					// 可选：处理其他命令（如DEL）
 				}
-			}
 		}else{
 			rf.applyCh <- ApplyMsg{
 				SnapshotValid:true,
