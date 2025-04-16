@@ -3,6 +3,7 @@ package raft
 import (
 	"time"
 	"sort"
+	"fmt"
 )
 
 type LogEntry struct{
@@ -34,6 +35,7 @@ type AppendEntriesReply struct{
 
 // reply为传出参数
 func (rf *Raft)AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply){
+	fmt.Println("AppendEntries")
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	LOG(rf.me, rf.currentTerm, DDebug, "<- S%d, Receive log, Prev=[%d]T%d, Len()=%d", args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries))

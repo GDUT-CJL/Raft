@@ -3,6 +3,7 @@ package raft
 import (
 	"math/rand"
 	"time"
+	"fmt"
 )
 
 
@@ -57,12 +58,13 @@ func (rf *Raft) isMoreUpToDateLocked(candidateIndex, candidateTerm int) bool {
 // RPC的回调函数，在sendRequestVote中会回调此函数
 // args代表想要成为leader的那个节点，reply代表我的回应（即我是否会给他投票）
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	fmt.Printf("节点 %d 收到来自节点 %d 的投票请求，任期 T%d\n", rf.me, args.CandidateId, args.Term)
+	fmt.Println("已进入RequestVote！！！！！！！！！！！！！")
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	// Your code here (PartA, PartB).
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false // 回复先默认为false，表示不同意
-
 	// 如果想要成为leader的那个节点的任期比我的任期还小，那我不会给票，直接返回
 	if args.Term < rf.currentTerm{
 		LOG(rf.me,rf.currentTerm,DVote,"-> S%d,Reject voted,higher term,T%d>T%d",args.CandidateId,rf.currentTerm,args.Term)
@@ -124,25 +126,30 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
+	fmt.Printf("节点 %d 尝试向节点 %d 发送 RequestVote（任期 %d）\n", rf.me, server, args.Term)
+    ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+    if !ok {
+        fmt.Printf("节点 %d 到节点 %d 的 RPC 调用失败\n", rf.me, server)
+    }
+    return ok
 }
 
 // 启动选举go程函数
 func (rf *Raft)startElection(term int){
+	fmt.Printf("节点 %d 开始选举，当前peers数量: %d\n", rf.me, len(rf.peers))
 	vote := 0
 	askVoteFromPeer := func(peer int,args *RequestVoteArgs){
 		reply := &RequestVoteReply{}
 		// 调用sendRequestVote RPC请求进行索票
 		ok := rf.sendRequestVote(peer,args,reply)
-		
+		//fmt.Printf("%v",ok)		
 		rf.mu.Lock()
         defer rf.mu.Unlock()
 		if !ok{// 如果返回错误，说明索票直接失败，返回
 			LOG(rf.me,rf.currentTerm,DDebug,"Ask vote from S%d,Lost or error",peer)
+			//fmt.Println("成为leader失败")
 			return
 		}
-
 		// 任期对齐
 		if reply.Term > rf.currentTerm{// 如果回复的票数比我当前想要成为leader的任期还大
 			rf.becomeFollowerLocked(reply.Term)// 则我自己就取消作为leader，变为follower且将自己任期改为reply.Term
@@ -159,6 +166,7 @@ func (rf *Raft)startElection(term int){
 			vote++// 则票数自增1
 			if vote > len(rf.peers)/2{//如果我的票数大于一半以上的同意票
 				rf.becomeLeaderLocked()// 那么我成为leader
+				fmt.Println("成为leader")
 				// 发起心跳和日志同步，通知其他成员我已经是leader并开始复制我的日志
 				go rf.replicationTicker(term)
 			}

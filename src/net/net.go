@@ -6,12 +6,17 @@ import (
 	"os"  
 	"strings"  
 	"course/bridge"
-
-	"course/raft"
+	"course/server"
+	"time"
+	"sync/atomic"
+	"hash/fnv"
 )  
 
+// Global counter to generate unique Client IDs  
+var clientIDCounter int64
+
 // StartTCPServer 启动TCP服务器并监听来自客户端的请求  
-func StartTCPServer(raft *raft.Raft,port int) {  
+func StartTCPServer(kv *server.KVServer, port int) {  
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))  
 	if err != nil {  
 		fmt.Fprintf(os.Stderr, "Error starting TCP server: %s\n", err)  
@@ -27,12 +32,21 @@ func StartTCPServer(raft *raft.Raft,port int) {
 			continue  
 		}  
 		// 使用 goroutine 处理连接  
-		go handleConnection(raft,conn)  
+		go handleConnection(kv,conn)  
 	}  
 }  
 
+// generateClientID generates a unique client ID for each connection  
+func generateClientID(conn net.Conn) int64 {  
+    // 结合节点IP和原子计数器
+    addr := conn.RemoteAddr().(*net.TCPAddr).IP.String()
+    hash := fnv.New64a()
+    hash.Write([]byte(addr))
+    return int64(hash.Sum64()) ^ (atomic.AddInt64(&clientIDCounter, 1) << 32)
+}
+
 // handleConnection 处理TCP连接的请求  
-func handleConnection(raft *raft.Raft,conn net.Conn) {  
+func handleConnection(kv *server.KVServer,conn net.Conn) {  
 	defer func() {  
 		fmt.Printf("Closing connection from %s\n", conn.RemoteAddr())  
 		conn.Close()  
@@ -49,35 +63,76 @@ func handleConnection(raft *raft.Raft,conn net.Conn) {
 
 		command := string(buffer[:n])  
 		command = strings.TrimSpace(command) // 去掉首尾空白  
-
+		rf := kv.GetRaft()
 		// 解析命令  
 		parts := strings.Split(command, " ")  
-		if len(parts) < 2 {  
+		if len(parts) < 1 {  
 			conn.Write([]byte("Invalid command\n"))  
 			continue  
 		}  
 		action := strings.ToUpper(parts[0]) // 转换为大写以支持不区分大小写  
-		key := parts[1]  
 
 		switch action {  
 		case "SET":  
 			if len(parts) != 3 {  
 				conn.Write([]byte("Invalid SET command\n"))  
 				continue  
-			}  
-			value := parts[2]  
+			} 
+			op := server.Op{
+				OpType:   server.Set,
+				Key:      parts[1],
+				Value:    parts[2],
+				ClientId: generateClientID(conn),
+				SeqId:      time.Now().UnixNano(),
+			} 
+			//value := parts[2]  
 			// bridge.Set(key, value) 
-			// 提交到Raft日志  
-			raft.Start(fmt.Sprintf("SET %s %s", key, value))   
-			fmt.Printf("Have Commited SET Log: %s:%s\n", key, value)  
+			// 提交到Raft日志
+			if _, _, isLeader := rf.Start(op); !isLeader {
+				conn.Write([]byte("ERR not leader\n")) // 返回操作结果  
+			}
 			conn.Write([]byte("OK\n")) // 返回操作结果  
 
-		case "GET":  
-			// 直接读取存储  
-			value := bridge.Get(key)  
-			fmt.Printf("GET command: key = %s, value = %s\n", key, value)  
-			conn.Write([]byte(value + "\n")) // 返回获取的值  
-
+		case "GET": 
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid GET command\n"))
+				continue
+			}
+			op := server.Op{
+				OpType:   server.Get,
+				Key:      parts[1],
+				ClientId: generateClientID(conn),
+				SeqId:    time.Now().UnixNano(),
+			}
+			index, _, isLeader := rf.Start(op)
+			if !isLeader {
+				conn.Write([]byte("ERR not leader\n"))
+				continue
+			}
+			
+			// 等待日志提交或超时
+			select {
+			case msg := <-kv.GetApplyChannel():
+				if msg.CommandIndex == index {
+					value := bridge.Get(parts[1])
+					conn.Write([]byte("OK " + value + "\n"))
+				} else {
+					conn.Write([]byte("ERR inconsistent state\n"))
+				}
+			case <-time.After(2 * time.Second):
+				conn.Write([]byte("ERR timeout\n"))
+			}
+		
+		// 返回该节点是不是leader
+		case "LEADER":
+			currentTerm, isLeader := rf.GetState()
+			fmt.Println("当前状态: %v, 当前任期: %d\n",isLeader,currentTerm)
+			if isLeader{
+				conn.Write([]byte("isLeader" + "\n")) // 返回获取的值  
+			}else{
+				conn.Write([]byte("isCluster" + "\n")) // 返回获取的值  
+			}
+			//return fmt.Sprintf("OK %v", isLeader)
 		default:  
 			conn.Write([]byte("Unknown command\n")) // 返回未识别的命令  
 		}  
