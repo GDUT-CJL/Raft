@@ -22,9 +22,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
+	"fmt"
 	//	"course/labgob"
 	"course/labrpc"
+
 )
 // 定义最短和最长的超时时间分别为 250ms和400ms
 const(
@@ -219,6 +220,9 @@ func (rf* Raft)contextLostLocked(role Role,term int) bool{
 	return !(rf.currentTerm == term && rf.role == role)
 }
 
+func MakeRaft() *Raft{
+	return &Raft{}
+}
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -234,7 +238,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-
+	fmt.Printf("raft.Make 中 rf.me = %d\n",rf.me)
 	// Your initialization code here (PartA, PartB, PartC).
 	rf.role = Follower
 	rf.currentTerm = 1

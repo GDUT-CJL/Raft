@@ -16,16 +16,16 @@ const (
 type OperationType uint8
 
 const (
-	OpSet OperationType = iota
-	OpGet
+	Set OperationType = iota
+	Get
 )
 
 func getOperationType(v string) OperationType {
 	switch v {
 	case "Set":
-		return OpSet
+		return Set
 	case "Get":
-		return OpGet
+		return Get
 	default:
 		panic(fmt.Sprintf("unknown operation type %s", v))
 	}
