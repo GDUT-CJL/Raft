@@ -1,21 +1,17 @@
-# Raft
-Raft of Go
+# A Simple Distributed KV database Based On C + Go (Used For learning)
+C is used for implementing storage engine
+GO is used for implementing raft algorithm
 
-## 领导者选举
-1、状态转换（三个转换函数）
-    1）becomeFollowerLocked
-    2）becomeCandidateLocked
-    3）becomeLeaderLocked
-2、选举逻辑
-    1）选举的循环
-    2）单轮选举
-    3）单次RPC
-    4）请求回应
-3、心跳逻辑
-    1）心跳的循环
-    2）单轮心跳
-    3）单词RPC
-    4）请求回应
+# GET
+git clone https://github.com/GDUT-CJL/Raft.git
 
-## 日志复制
+# Bulid
+cd src/
+go build main.go
+Before Running You Need To Write "config.json" File
 
+# Specific Documents Follow Blog "C_J_L12580" (TO DO)
+
+
+# How To Test
+Use Network Debugging Assistant Or "telnet" Command in Linux(telnet 127.0.0.1 8000)
