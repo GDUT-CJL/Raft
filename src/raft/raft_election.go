@@ -3,7 +3,6 @@ package raft
 import (
 	"math/rand"
 	"time"
-	"fmt"
 )
 
 
@@ -58,8 +57,6 @@ func (rf *Raft) isMoreUpToDateLocked(candidateIndex, candidateTerm int) bool {
 // RPC的回调函数，在sendRequestVote中会回调此函数
 // args代表想要成为leader的那个节点，reply代表我的回应（即我是否会给他投票）
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	fmt.Printf("节点 %d 收到来自节点 %d 的投票请求，任期 T%d\n", rf.me, args.CandidateId, args.Term)
-	fmt.Println("已进入RequestVote！！！！！！！！！！！！！")
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	// Your code here (PartA, PartB).
@@ -126,17 +123,17 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	fmt.Printf("节点 %d 尝试向节点 %d 发送 RequestVote（任期 %d）\n", rf.me, server, args.Term)
+	//fmt.Printf("节点 %d 尝试向节点 %d 发送 RequestVote（任期 %d）\n", rf.me, server, args.Term)
     ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-    if !ok {
-        fmt.Printf("节点 %d 到节点 %d 的 RPC 调用失败\n", rf.me, server)
-    }
+    // if !ok {
+    //     fmt.Printf("节点 %d 到节点 %d 的 RPC 调用失败\n", rf.me, server)
+    // }
     return ok
 }
 
 // 启动选举go程函数
 func (rf *Raft)startElection(term int){
-	fmt.Printf("节点 %d 开始选举，当前peers数量: %d\n", rf.me, len(rf.peers))
+	//fmt.Printf("节点 %d 开始选举，当前peers数量: %d\n", rf.me, len(rf.peers))
 	vote := 0
 	askVoteFromPeer := func(peer int,args *RequestVoteArgs){
 		reply := &RequestVoteReply{}
@@ -166,7 +163,7 @@ func (rf *Raft)startElection(term int){
 			vote++// 则票数自增1
 			if vote > len(rf.peers)/2{//如果我的票数大于一半以上的同意票
 				rf.becomeLeaderLocked()// 那么我成为leader
-				fmt.Println("成为leader")
+				//fmt.Printf(" 节点 %d 成为leader\n",rf.me)
 				// 发起心跳和日志同步，通知其他成员我已经是leader并开始复制我的日志
 				go rf.replicationTicker(term)
 			}
