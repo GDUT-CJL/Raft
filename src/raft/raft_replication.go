@@ -3,7 +3,7 @@ package raft
 import (
 	"time"
 	"sort"
-	"fmt"
+	//"fmt"
 )
 
 type LogEntry struct{
@@ -35,7 +35,7 @@ type AppendEntriesReply struct{
 
 // reply为传出参数
 func (rf *Raft)AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply){
-	fmt.Println("AppendEntries")
+	//fmt.Printf("leaderid = %d 在任期 %d 发出AppendEntries\n",args.LeaderId,args.Term)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	LOG(rf.me, rf.currentTerm, DDebug, "<- S%d, Receive log, Prev=[%d]T%d, Len()=%d", args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries))
@@ -62,6 +62,14 @@ func (rf *Raft)AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 		reply.ConfilictIndex = rf.log.size()
 		reply.ConfilictTerm = InvalidIndex
 		LOG(rf.me,rf.currentTerm,DLog2,"<- S%d,Reject log,Follower too short,len : %d <= Pre:%d",args.LeaderId,rf.log.size(),args.PrevLogIndex)
+		return
+	}
+	// 检查领导者的前一个日志索引 (PrevLogIndex) 是否小于跟随者的快照最后索引 (snapLastIdx)。
+	// 这表示跟随者的日志已经被截断，而该索引对应的条目不再存在于跟随者的日志中。
+	if args.PrevLogIndex < rf.log.snapLastIdx {
+		reply.ConfilictTerm = rf.log.snapLastTerm
+		reply.ConfilictIndex = rf.log.snapLastIdx
+		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, Follower log truncated in %d", args.LeaderId, rf.log.snapLastIdx)
 		return
 	}
 	// 代码执行到这里说明此时leader和follower的日志号已经一致

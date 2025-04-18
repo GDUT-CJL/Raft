@@ -89,9 +89,10 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 			// bridge.Set(key, value) 
 			// 提交到Raft日志
 			if _, _, isLeader := rf.Start(op); !isLeader {
-				conn.Write([]byte("ERR not leader\n")) // 返回操作结果  
+				conn.Write([]byte("is not leader\n")) // 不是leader节点不给set，强一致性
+			}else{
+				conn.Write([]byte("OK\n")) // 返回操作结果  
 			}
-			conn.Write([]byte("OK\n")) // 返回操作结果  
 
 		case "GET": 
 			if len(parts) != 2 {
@@ -104,29 +105,17 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				ClientId: generateClientID(conn),
 				SeqId:    time.Now().UnixNano(),
 			}
-			index, _, isLeader := rf.Start(op)
+			_, _, isLeader := rf.Start(op)
 			if !isLeader {
-				conn.Write([]byte("ERR not leader\n"))
-				continue
+				conn.Write([]byte(" not leader\n"))
+			} else{
+				value := bridge.Get(parts[1])
+				conn.Write([]byte("OK " + value + "\n"))
 			}
-			
-			// 等待日志提交或超时
-			select {
-			case msg := <-kv.GetApplyChannel():
-				if msg.CommandIndex == index {
-					value := bridge.Get(parts[1])
-					conn.Write([]byte("OK " + value + "\n"))
-				} else {
-					conn.Write([]byte("ERR inconsistent state\n"))
-				}
-			case <-time.After(2 * time.Second):
-				conn.Write([]byte("ERR timeout\n"))
-			}
-		
 		// 返回该节点是不是leader
 		case "LEADER":
 			currentTerm, isLeader := rf.GetState()
-			fmt.Println("当前状态: %v, 当前任期: %d\n",isLeader,currentTerm)
+			fmt.Printf("当前状态: %v, 当前任期: %d\n",isLeader,currentTerm)
 			if isLeader{
 				conn.Write([]byte("isLeader" + "\n")) // 返回获取的值  
 			}else{

@@ -22,7 +22,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"fmt"
 	//	"course/labgob"
 	"course/labrpc"
 
@@ -180,6 +179,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	// 只有leader节点才能够操作日志，无论是set或者get等其他操作都必须是leader操作
 	if rf.role != Leader{
 		return 0,0,false
 	}
@@ -238,7 +238,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	fmt.Printf("raft.Make 中 rf.me = %d\n",rf.me)
 	// Your initialization code here (PartA, PartB, PartC).
 	rf.role = Follower
 	rf.currentTerm = 1
