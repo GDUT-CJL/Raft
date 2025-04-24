@@ -26,8 +26,6 @@ type KVServer struct {
 	me      int
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
-	// 用于存储每个 seqId 请求对应的状态通道,通知当server端日志提交时候，通知网络层的可以进行相应操作了 
-	requestWaitCh map[int64]chan struct{}  
 	dead    int32 // set by Kill()
 
 	maxraftstate int // snapshot if log grows this big
@@ -35,7 +33,8 @@ type KVServer struct {
 	// Your definitions here.
 	lastApplied    int
 
-	clientSeq   map[int64]int64 // 客户端最后处理的序列号
+	clientSeqTable   map[int64]LastOperationInfo // 客户端最后处理的序列号
+	notifyChans	map[int]chan *OpReply
 
 }
 
@@ -49,8 +48,12 @@ func (kv *KVServer) GetApplyChannel() <-chan raft.ApplyMsg {
 	return kv.applyCh
 }
 
-func (kv *KVServer) GetRequestWaitCh() map[int64]chan struct{} {  
-	return kv.requestWaitCh
+func (kv *KVServer) Lock() {  
+    kv.mu.Lock()  
+}  
+
+func (kv *KVServer) Unlock() {  
+    kv.mu.Unlock()  
 } 
 
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
@@ -66,13 +69,14 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	kv.requestWaitCh = make(map[int64]chan struct{}) 
 	
 	// You may need initialization code here.
 	kv.dead = 0
 	kv.lastApplied = 0
 
-	kv.clientSeq = make(map[int64]int64)
+	kv.clientSeqTable = make(map[int64] LastOperationInfo)
+	kv.notifyChans = make(map[int]chan *OpReply)
+
 	go kv.applyTask()
 	return kv
 }
@@ -81,7 +85,6 @@ func (kv *KVServer)applyTask(){
 	for !kv.killed(){
 		select{
 		case message := <-kv.applyCh:
-			fmt.Println("获取applyCh数据")
 			if message.CommandValid{
 				kv.mu.Lock()
 				// 如果是已经处理过的消息则直接忽略
@@ -90,31 +93,61 @@ func (kv *KVServer)applyTask(){
 					continue
 				}
 				kv.lastApplied = message.CommandIndex
-
 				// 这行代码使用了类型断言（type assertion），它的主要作用是将 message.Command 转换为 Op 类型
 				op := message.Command.(Op)
-				fmt.Println("将数据应用到状态机")
-				kv.applyToStateMachine(op)
-                // 通知等待该操作的通道  
-                if ch, ok := kv.requestWaitCh[op.SeqId]; ok {
-					fmt.Println("1")  
-                    close(ch) // close correspondingly  
-                }  				
+				var opReply *OpReply
+				// 线性一致性要求，如果是重复的请求则只会执行一次被称为“请求的幂等性”
+				// 避免重复请求的多次执行
+				if kv.requestDuplicated(op.ClientId,op.SeqId){
+					opReply = kv.clientSeqTable[op.ClientId].Reply
+				}else{
+					// 更新clientSeqTable数据
+					opReply = kv.applyToStateMachine(op)
+					kv.clientSeqTable[op.ClientId] = LastOperationInfo{
+						SeqId: op.SeqId,
+						Reply: opReply,
+					} 
+				}
+				// 将结果发送回去
+				if _, isLeader := kv.rf.GetState(); isLeader {
+					notifyCh := kv.GetNotifyChannel(message.CommandIndex)
+					notifyCh <- opReply
+				}		
+				// 判断是否需要进行snapshot快照					
 				kv.mu.Unlock()
 			}
 		}
 	}
 }
 
-
-func (kv *KVServer)applyToStateMachine(op Op){
+func (kv *KVServer)applyToStateMachine(op Op) *OpReply{
+	var value int
+	var err string
 	switch	op.OpType{
 	case Set:
-		bridge.Set(op.Key,op.Value)
-	case Get:
-		// 仅更新序列号，不修改数据
-		fmt.Println("Get in applyToStateMachine")
+		err = bridge.Array_Set(op.Key,op.Value)
+	case Delete:
+		err = bridge.Array_Delete(op.Key)
+	case Count:
+		value = bridge.Array_Count()
+	default:
+		fmt.Println("Wrroied Command")
 	}
-	// 更新客户端序列号
-	kv.clientSeq[op.ClientId] = op.SeqId
+	return &OpReply{Value: value, Err: err}
+}
+
+func (kv *KVServer) GetNotifyChannel(index int) chan *OpReply {
+	if _, ok := kv.notifyChans[index]; !ok {
+		kv.notifyChans[index] = make(chan *OpReply, 1)
+	}
+	return kv.notifyChans[index]
+}
+
+func (kv *KVServer) RemoveNotifyChannel(index int) {
+	delete(kv.notifyChans, index)
+}
+
+func (kv* KVServer) requestDuplicated(clientID,seqId int64) bool {
+	info,ok := kv.clientSeqTable[clientID]
+	return ok && seqId <= info.SeqId
 }

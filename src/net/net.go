@@ -7,9 +7,11 @@ import (
 	"strings"  
 	"course/bridge"
 	"course/server"
+	"course/raft"
 	"time"
 	"sync/atomic"
 	"hash/fnv"
+	"strconv"
 )  
 
 // Global counter to generate unique Client IDs  
@@ -45,6 +47,38 @@ func generateClientID(conn net.Conn) int64 {
     return int64(hash.Sum64()) ^ (atomic.AddInt64(&clientIDCounter, 1) << 32)
 }
 
+
+func Array_Opreate(kv *server.KVServer,conn net.Conn,parts []string,rf *raft.Raft,opType server.OperationType,part1 string,part2 string){
+	op := server.Op{
+		OpType:   opType,
+		Key:      part1,
+		Value:    part2,
+		ClientId: generateClientID(conn),
+		SeqId:      time.Now().UnixNano(),
+	} 
+	//value := parts[2]  
+	// bridge.Set(key, value) 
+	// 使用notifyCh确保先提交到Raft日志后再返回客户端
+	if index, _, isLeader := rf.Start(op); isLeader {
+		kv.Lock()
+		notifyCh := kv.GetNotifyChannel(index)
+		kv.Unlock()
+		select {
+		case <-notifyCh:
+			conn.Write([]byte("OK\n")) // 返回操作结果  
+		case <-time.After(2*time.Second):
+			conn.Write([]byte("Time Out\n")) // 返回操作结果  
+		}
+		go func() {
+			kv.Lock()
+			kv.RemoveNotifyChannel(index)
+			kv.Unlock()
+		}()
+	}else{
+		conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
+	}
+}
+
 // handleConnection 处理TCP连接的请求  
 func handleConnection(kv *server.KVServer,conn net.Conn) {  
 	defer func() {  
@@ -60,7 +94,6 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 			fmt.Fprintf(os.Stderr, "Error reading from connection: %s\n", err)  
 			return  
 		}  
-
 		command := string(buffer[:n])  
 		command = strings.TrimSpace(command) // 去掉首尾空白  
 		rf := kv.GetRaft()
@@ -71,46 +104,60 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 			continue  
 		}  
 		action := strings.ToUpper(parts[0]) // 转换为大写以支持不区分大小写  
-
 		switch action {  
 		case "SET":  
 			if len(parts) != 3 {  
 				conn.Write([]byte("Invalid SET command\n"))  
 				continue  
 			} 
-			op := server.Op{
-				OpType:   server.Set,
-				Key:      parts[1],
-				Value:    parts[2],
-				ClientId: generateClientID(conn),
-				SeqId:      time.Now().UnixNano(),
-			} 
-			//value := parts[2]  
-			// bridge.Set(key, value) 
-			// 提交到Raft日志
-			if _, _, isLeader := rf.Start(op); !isLeader {
-				conn.Write([]byte("is not leader\n")) // 不是leader节点不给set，强一致性
-			}else{
-				conn.Write([]byte("OK\n")) // 返回操作结果  
-			}
-
+			Array_Opreate(kv,conn,parts,rf,server.Set,parts[1],parts[2])
 		case "GET": 
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid GET command\n"))
 				continue
 			}
+			value := bridge.Array_Get(parts[1])
+			if len(value) != 0{
+				conn.Write([]byte(value + "\n"))
+			}else{
+				conn.Write([]byte("nil\n"))
+			}
+		case "DELETE":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid Delete command\n"))
+				continue
+			}
+			Array_Opreate(kv,conn,parts,rf,server.Delete,parts[1],parts[1])
+		case "COUNT":
+			if len(parts) != 1 {
+				conn.Write([]byte("ERR invalid Count command\n"))
+				continue
+			}
 			op := server.Op{
-				OpType:   server.Get,
-				Key:      parts[1],
+				OpType:   server.Count,
+				Key:      parts[0],
 				ClientId: generateClientID(conn),
 				SeqId:    time.Now().UnixNano(),
+			} 
+			if _, _, isLeader := rf.Start(op); !isLeader {
+				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
+			}else{
+				count := bridge.Array_Count() / rf.GetPeerLen()
+				// int 转为 string
+				s := strconv.Itoa(count)
+				conn.Write([]byte(s + "\n"))
 			}
-			_, _, isLeader := rf.Start(op)
-			if !isLeader {
-				conn.Write([]byte(" not leader\n"))
-			} else{
-				value := bridge.Get(parts[1])
-				conn.Write([]byte("OK " + value + "\n"))
+		case "EXIST":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid Exist command\n"))
+				continue
+			}
+			ret := bridge.Array_Exist(parts[1])
+			// int 转为 string	
+			if ret == 0{
+				conn.Write([]byte("Exist\n"))
+			}else{
+				conn.Write([]byte("not Exist\n"))
 			}
 		// 返回该节点是不是leader
 		case "LEADER":
@@ -121,9 +168,8 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 			}else{
 				conn.Write([]byte("isCluster" + "\n")) // 返回获取的值  
 			}
-			//return fmt.Sprintf("OK %v", isLeader)
 		default:  
 			conn.Write([]byte("Unknown command\n")) // 返回未识别的命令  
 		}  
 	}  
-}  
+} 

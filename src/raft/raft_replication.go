@@ -109,8 +109,8 @@ func (rf *Raft) getMajorityIndexLocked() int{
 	tmpIndexs := make([]int,len(rf.matchIndex))
 	copy(tmpIndexs,rf.matchIndex)
 	sort.Ints(sort.IntSlice(tmpIndexs)) // 排序
-	//majorityIndex := (len(tmpIndexs) - 1) / 2 // 取中位数，代表一半以上已经复制了的日志
-	majorityIndex := len(tmpIndexs) / 2  // 3节点时取索引1（第2个节点的值）
+	majorityIndex := (len(tmpIndexs) - 1) / 2 // 取中位数，代表一半以上已经复制了的日志
+	//majorityIndex := len(tmpIndexs) / 2  // 3节点时取索引1（第2个节点的值）
 	LOG(rf.me, rf.currentTerm, DDebug, "Match index after sort: %v, majority[%d]=%d", tmpIndexs, majorityIndex, tmpIndexs[majorityIndex])
 	return tmpIndexs[majorityIndex]	// 返回对应的日志号
 }

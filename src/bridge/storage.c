@@ -1,3 +1,5 @@
+// gcc -fPIC -c storage.c
+// gcc -shared storage.o -o libstorage.so
 #include "storage.h"
 #include <stdio.h>
 #include <string.h>
@@ -30,28 +32,13 @@ int init_array(){
 
 	pthread_mutex_init(&array_table->array_mutex,NULL);
 
-	array_table->array = (kvs_array_item_t*)malloc(sizeof(kvs_array_item_t)*MAX_ARRAY_NUMS);
+	array_table->array = (kvs_array_item_t*)calloc(MAX_ARRAY_NUMS, sizeof(kvs_array_item_t));  
 	if(!array_table->array){
 		pthread_mutex_destroy(&array_table->array_mutex);
 		return -1;
 	}
 
-	array_table->array->key = (char*)malloc(sizeof(char));
-	if(!array_table->array->key){
-		pthread_mutex_destroy(&array_table->array_mutex);
-		free(array_table->array);
-		return -1;
-	}
-
-	array_table->array->value = (char*)malloc(sizeof(char));
-	if(!array_table->array->value){
-		pthread_mutex_destroy(&array_table->array_mutex);
-		free(array_table->array);
-		free(array_table->array->key);
-		return -1;
-	}
-
-    return 0;
+     return 0;
 }
 
 kvs_array_item_t* array_search_item(const char* key){
@@ -99,8 +86,6 @@ int kvs_array_insert_ttl(char* key,char* value,long long expired_time){
 	for(i = 0; i < MAX_ARRAY_NUMS;++i){
 		if(array_table->array[i].key == NULL && array_table->array[i].value == NULL)
 			break;
-		if(strcmp(array_table->array[i].key, kcopy) == 0)
-			break;
 	}
 	array_table->array[i].key = kcopy;
 	array_table->array[i].value = vcopy;
@@ -124,34 +109,53 @@ char* get(const char* key){
 	return NULL;
 }
 
-// int main(){
+// array delete
+int delete(const char* key){  
+    if (!key) return -1; // 检查 key 是否为空  
+	
+    _clean_expired_task();  
+    for (int i = 0; i < MAX_ARRAY_NUMS; i++) {  
+        // 检查 array_table[i].key 是否为 NULL，只有在不为 NULL 的情况下才进行比较  
+        if (array_table->array[i].key != NULL && strcmp(array_table->array[i].key, key) == 0) {  
+            // 释放内存
+            free(array_table->array[i].key);  
+            array_table->array[i].key = NULL;  
 
-// 	int ret = init_array();
-//     if(ret == -1){
-//         printf("初始化失败\n");
-//         return -1;
-//     }
+            if (array_table->array[i].value != NULL) {  
+                free(array_table->array[i].value);  
+                array_table->array[i].value = NULL;    
+            }  
+            array_table->array_count--;  // 减少元素计数  
+            return 0;  // 成功删除  
+        }  
+    }  
+    return -1; // 未找到要删除的 key  
+}  
 
-//     set("k1","v1");
-//     set("k2","v2");
-//     set("k3","v3");
-//     set("k4","v4");
+// array count
+int count(){
+    return array_table->array_count;
+}
 
-//     char* v1 = get("k1");
-//     if(v1!= NULL){
-//         printf("k1:%s\n",v1);
-//     }
-//     char* v2 = get("k2");
-//     if(v2!= NULL){
-//         printf("k2:%s\n",v2);
-//     }
-//     char* v3 = get("k3");
-//     if(v3!= NULL){
-//         printf("k3:%s\n",v3);
-//     }
+kvs_array_item_t* kvs_array_search_item(const char* key){
+	if(!key) return NULL;
+	_clean_expired_task();
+	for(int idx = 0; idx < MAX_ARRAY_NUMS;idx++){
+		if (array_table->array[idx].key == NULL) {
+			continue;
+		}
+		if((strcmp(array_table->array[idx].key,key) == 0)){
+			return &array_table->array[idx];
+		}			
+	}
+	return NULL;
+}
 
-//     char* v4 = get("k4");
-//     if(v4!= NULL){
-//         printf("k4:%s\n",v4);
-//     }
-// }
+// array exist
+int exist(const char* key){
+	kvs_array_item_t* get = kvs_array_search_item(key);
+	if(get){
+		return 0;
+	}
+	return -1;
+}
