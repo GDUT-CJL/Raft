@@ -22,10 +22,14 @@ typedef struct kvs_array_s{
 }kvs_array_t;
 
 struct kvs_array_s* array_table;
-
+// array
 int init_array();
 int set(char* key,char* value);
 char* get(const char* key);
+int delete(const char* key);
+int count();
+int exist(const char* key);
+
 
 #ifdef __cplusplus  
 }  

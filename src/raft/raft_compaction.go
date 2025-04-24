@@ -7,6 +7,7 @@ import (
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
+// 应用层调用该接口，传入index即从哪里开始做快照已经一个byte的切片
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (PartD).
 	rf.mu.Lock()

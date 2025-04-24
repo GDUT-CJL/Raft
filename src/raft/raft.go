@@ -102,6 +102,13 @@ type Raft struct {
 	snapAppending bool
 }
 
+func (rf *Raft) GetPeerLen() int{
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return len(rf.peers)
+}
+
+
 // 将调用此函数的节点转换状态成为follower，任期更改为传入参数term
 func (rf *Raft)becomeFollowerLocked(term int){
 	if rf.currentTerm > term{//如果当前任期大于term，说明我还不能成为follower，因为我的任期比较大

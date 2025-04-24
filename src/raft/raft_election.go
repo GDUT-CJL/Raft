@@ -3,6 +3,7 @@ package raft
 import (
 	"math/rand"
 	"time"
+	"fmt"
 )
 
 
@@ -163,7 +164,7 @@ func (rf *Raft)startElection(term int){
 			vote++// 则票数自增1
 			if vote > len(rf.peers)/2{//如果我的票数大于一半以上的同意票
 				rf.becomeLeaderLocked()// 那么我成为leader
-				//fmt.Printf(" 节点 %d 成为leader\n",rf.me)
+				fmt.Printf(" Node %d become leader\n",rf.me)
 				// 发起心跳和日志同步，通知其他成员我已经是leader并开始复制我的日志
 				go rf.replicationTicker(term)
 			}

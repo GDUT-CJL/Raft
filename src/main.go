@@ -13,6 +13,7 @@ import (
 	"course/raft"
 	"course/server"
 	"course/config"
+	"flag"
 )
 
 var globalNetwork = labrpc.MakeNetwork()
@@ -39,7 +40,7 @@ func startNode(id, port int, cluster []string) (*Node, error) {
 
 	// 2. 创建KV和Raft实例
 	persister := raft.MakePersister()
-	kv := server.StartKVServer(peers, id, persister, 1000)
+	kv := server.StartKVServer(peers, id, persister, -1) // -1代表暂时不需要进行snapshot
 
 	// 3. 注册Raft RPC服务
 	svc := labrpc.MakeServer()
@@ -58,7 +59,10 @@ func startNode(id, port int, cluster []string) (*Node, error) {
 func main() {
 	// 初始化存储
 	bridge.InitStorage()
-	configs,err := config.ParseEndpointsConfig("config.json")
+	path := flag.String("path","config/config.json","config path")
+	flag.Parse()
+
+	configs,err := config.ParseEndpointsConfig(*path)
 	if err != nil {
 		fmt.Printf("Error loading config: %v\n", err)
 		os.Exit(1)
