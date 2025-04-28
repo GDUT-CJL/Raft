@@ -356,22 +356,30 @@ btree_node *btree_borrow(btree_node *cur, int idx_key, int idx_dest){
 btree_node *btree_merge(btree *T, btree_node *cur, int idx){
     btree_node *left = cur->children[idx];
     btree_node *right = cur->children[idx+1];
-    // 自己下去左孩子，调整当前节点
+    // 保存原始数量
+    int original_num = cur->num;
+    
+    // 下移父节点键到左孩子
     left->keys[left->num] = cur->keys[idx];
     left->values[left->num] = cur->values[idx];
     left->num++;
-    for(int i=idx; i<cur->num-1; i++){
+    
+    // 左移父节点的键和子指针
+    for(int i=idx; i < original_num - 1; i++){
         cur->keys[i] = cur->keys[i+1];
         cur->values[i] = cur->values[i+1];
         cur->children[i+1] = cur->children[i+2];
     }
-	kvs_free(cur->keys[cur->num - 1]);
-    kvs_free(cur->values[cur->num - 1]);
-    cur->keys[cur->num-1] = NULL;
-    cur->values[cur->num-1] = NULL;
-    cur->children[cur->num] = NULL;
-    cur->num--;
-    // 右孩子复制到左孩子
+    
+    // 释放原最后一个键和值
+    kvs_free(cur->keys[original_num - 1]);
+    kvs_free(cur->values[original_num - 1]);
+    cur->keys[original_num - 1] = NULL;
+    cur->values[original_num - 1] = NULL;
+    cur->children[original_num] = NULL;
+    cur->num = original_num - 1;  // 更新父节点键数量
+    
+    // 复制右兄弟的键和子节点到左兄弟
     for(int i=0; i<right->num; i++){
         left->keys[left->num] = right->keys[i];
         left->values[left->num] = right->values[i];
@@ -379,10 +387,10 @@ btree_node *btree_merge(btree *T, btree_node *cur, int idx){
         left->num++;
     }
     left->children[left->num] = right->children[right->num];
-    // 删除右孩子
+    
+    // 销毁右兄弟并更新根节点
     btree_node_destroy(right);
-    // 更新根节点
-    if(T->root_node==cur  && cur->num==0){
+    if(T->root_node == cur && cur->num == 0){
         btree_node_destroy(cur);
         T->root_node = left;
     }
