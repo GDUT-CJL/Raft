@@ -1,20 +1,27 @@
 package server
 
-const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
-	ErrWrongLeader = "ErrWrongLeader"
-	ErrTimeout     = "ErrTimeout"
-)
-
 type OperationType uint8
 
 const (
 	Set OperationType = iota
-	Get
 	Delete
-	Exist
 	Count
+
+	HSet
+	HDelete
+	HCount
+
+	RSet
+	RDelete
+	RCount
+
+	BSet
+	BDelete
+	BCount
+
+	ZSet
+	ZDelete
+	ZCount
 )
 
 type OpReply struct {

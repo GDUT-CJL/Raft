@@ -33,9 +33,10 @@ type KVServer struct {
 	// Your definitions here.
 	lastApplied    int
 
-	clientSeqTable   map[int64]LastOperationInfo // 客户端最后处理的序列号
+	// key为clientID，value是LastOperationInfo（SeqId + Reply）
+	// 客户端每次发送一个请求在server中都会给随机一个ClentId和SeqId
+	clientSeqTable   map[int64]LastOperationInfo // 客户端最后处理的序列号,处理重复请求
 	notifyChans	map[int]chan *OpReply
-
 }
 
 func (kv *KVServer) GetRaft() *raft.Raft {  
@@ -130,6 +131,34 @@ func (kv *KVServer)applyToStateMachine(op Op) *OpReply{
 		err = bridge.Array_Delete(op.Key)
 	case Count:
 		value = bridge.Array_Count()
+
+	case HSet:
+		err = bridge.Hash_Set(op.Key,op.Value)
+	case HDelete:
+		err = bridge.Hash_Delete(op.Key)
+	case HCount:
+		value = bridge.Hash_Count()
+
+	case RSet:
+		err = bridge.RB_Set(op.Key,op.Value)
+	case RDelete:
+		err = bridge.RB_Delete(op.Key)
+	case RCount:
+		value = bridge.RB_Count()
+
+	case BSet:
+		err = bridge.BTree_Set(op.Key,op.Value)
+	case BDelete:
+		err = bridge.BTree_Delete(op.Key)
+	case BCount:
+		value = bridge.BTree_Count()
+
+	case ZSet:
+		err = bridge.Skiplist_Set(op.Key,op.Value)
+	case ZDelete:
+		err = bridge.Skiplist_Delete(op.Key)
+	case ZCount:
+		value = bridge.Skiplist_Count()
 	default:
 		fmt.Println("Wrroied Command")
 	}
