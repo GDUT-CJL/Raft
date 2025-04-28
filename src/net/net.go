@@ -47,8 +47,8 @@ func generateClientID(conn net.Conn) int64 {
     return int64(hash.Sum64()) ^ (atomic.AddInt64(&clientIDCounter, 1) << 32)
 }
 
-
-func Array_Opreate(kv *server.KVServer,conn net.Conn,parts []string,rf *raft.Raft,opType server.OperationType,part1 string,part2 string){
+// 将相关操作提交，并应用到相应状态机上
+func Commited(kv *server.KVServer,conn net.Conn,parts []string,rf *raft.Raft,opType server.OperationType,part1 string,part2 string){
 	op := server.Op{
 		OpType:   opType,
 		Key:      part1,
@@ -110,7 +110,7 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				conn.Write([]byte("Invalid SET command\n"))  
 				continue  
 			} 
-			Array_Opreate(kv,conn,parts,rf,server.Set,parts[1],parts[2])
+			Commited(kv,conn,parts,rf,server.Set,parts[1],parts[2])
 		case "GET": 
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid GET command\n"))
@@ -127,7 +127,7 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				conn.Write([]byte("ERR invalid Delete command\n"))
 				continue
 			}
-			Array_Opreate(kv,conn,parts,rf,server.Delete,parts[1],parts[1])
+			Commited(kv,conn,parts,rf,server.Delete,parts[1],parts[1])
 		case "COUNT":
 			if len(parts) != 1 {
 				conn.Write([]byte("ERR invalid Count command\n"))
@@ -153,11 +153,223 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				continue
 			}
 			ret := bridge.Array_Exist(parts[1])
-			// int 转为 string	
 			if ret == 0{
 				conn.Write([]byte("Exist\n"))
 			}else{
 				conn.Write([]byte("not Exist\n"))
+			}
+		case "HSET":
+			if len(parts) != 3 {  
+				conn.Write([]byte("Invalid HSET command\n"))  
+				continue  
+			} 
+			Commited(kv,conn,parts,rf,server.HSet,parts[1],parts[2])
+		case "HGET":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid HGET command\n"))
+				continue
+			}
+			value := bridge.Hash_Get(parts[1])
+			if len(value) != 0{
+				conn.Write([]byte(value + "\n"))
+			}else{
+				conn.Write([]byte("nil\n"))
+			}
+		case "HDELETE":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid HDelete command\n"))
+				continue
+			}
+			Commited(kv,conn,parts,rf,server.HDelete,parts[1],parts[1])
+		case "HEXIST":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid HExist command\n"))
+				continue
+			}
+			ret := bridge.Hash_Exist(parts[1])
+			if ret == 0{
+				conn.Write([]byte("Exist\n"))
+			}else{
+				conn.Write([]byte("not Exist\n"))
+			}
+		case "HCOUNT":
+			if len(parts) != 1 {
+				conn.Write([]byte("ERR invalid HCount command\n"))
+				continue
+			}
+			op := server.Op{
+				OpType:   server.HCount,
+				Key:      parts[0],
+				ClientId: generateClientID(conn),
+				SeqId:    time.Now().UnixNano(),
+			} 
+			if _, _, isLeader := rf.Start(op); !isLeader {
+				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
+			}else{
+				count := bridge.Hash_Count()
+				// int 转为 string
+				s := strconv.Itoa(count)
+				conn.Write([]byte(s + "\n"))
+			}
+		case "RSET":
+			if len(parts) != 3 {  
+				conn.Write([]byte("Invalid RSET command\n"))  
+				continue  
+			} 
+			Commited(kv,conn,parts,rf,server.RSet,parts[1],parts[2])			
+		case "RGET":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid RGET command\n"))
+				continue
+			}
+			value := bridge.RB_Get(parts[1])
+			if len(value) != 0{
+				conn.Write([]byte(value + "\n"))
+			}else{
+				conn.Write([]byte("nil\n"))
+			}
+		case "RDELETE":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid RDelete command\n"))
+				continue
+			}
+			Commited(kv,conn,parts,rf,server.RDelete,parts[1],parts[1])
+		case "REXIST":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid RExist command\n"))
+				continue
+			}
+			ret := bridge.RB_Exist(parts[1])
+			if ret == 0{
+				conn.Write([]byte("Exist\n"))
+			}else{
+				conn.Write([]byte("not Exist\n"))
+			}
+		case "RCOUNT":
+			if len(parts) != 1 {
+				conn.Write([]byte("ERR invalid RCount command\n"))
+				continue
+			}
+			op := server.Op{
+				OpType:   server.RCount,
+				Key:      parts[0],
+				ClientId: generateClientID(conn),
+				SeqId:    time.Now().UnixNano(),
+			} 
+			if _, _, isLeader := rf.Start(op); !isLeader {
+				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
+			}else{
+				count := bridge.RB_Count() / rf.GetPeerLen()
+				// int 转为 string
+				s := strconv.Itoa(count)
+				conn.Write([]byte(s + "\n"))
+			}
+		case "BSET":
+			if len(parts) != 3 {  
+				conn.Write([]byte("Invalid BSET command\n"))  
+				continue  
+			} 
+			Commited(kv,conn,parts,rf,server.BSet,parts[1],parts[2])			
+		case "BGET":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid BGET command\n"))
+				continue
+			}
+			value := bridge.BTree_Get(parts[1])
+			if len(value) != 0{
+				conn.Write([]byte(value + "\n"))
+			}else{
+				conn.Write([]byte("nil\n"))
+			}
+		case "BDELETE":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid BDelete command\n"))
+				continue
+			}
+			Commited(kv,conn,parts,rf,server.BDelete,parts[1],parts[1])
+		case "BEXIST":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid BExist command\n"))
+				continue
+			}
+			ret := bridge.BTree_Exist(parts[1])
+			if ret == 0{
+				conn.Write([]byte("Exist\n"))
+			}else{
+				conn.Write([]byte("not Exist\n"))
+			}
+		case "BCOUNT":
+			if len(parts) != 1 {
+				conn.Write([]byte("ERR invalid BCount command\n"))
+				continue
+			}
+			op := server.Op{
+				OpType:   server.BCount,
+				Key:      parts[0],
+				ClientId: generateClientID(conn),
+				SeqId:    time.Now().UnixNano(),
+			} 
+			if _, _, isLeader := rf.Start(op); !isLeader {
+				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
+			}else{
+				count := bridge.BTree_Count()
+				// int 转为 string
+				s := strconv.Itoa(count)
+				conn.Write([]byte(s + "\n"))
+			}
+
+		case "ZSET":
+			if len(parts) != 3 {  
+				conn.Write([]byte("Invalid ZSET command\n"))  
+				continue  
+			} 
+			Commited(kv,conn,parts,rf,server.ZSet,parts[1],parts[2])			
+		case "ZGET":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid ZGET command\n"))
+				continue
+			}
+			value := bridge.Skiplist_Get(parts[1])
+			if len(value) != 0{
+				conn.Write([]byte(value + "\n"))
+			}else{
+				conn.Write([]byte("nil\n"))
+			}
+		case "ZDELETE":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid ZDelete command\n"))
+				continue
+			}
+			Commited(kv,conn,parts,rf,server.ZDelete,parts[1],parts[1])
+		case "ZEXIST":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid ZExist command\n"))
+				continue
+			}
+			ret := bridge.Skiplist_Exist(parts[1])
+			if ret == 0{
+				conn.Write([]byte("Exist\n"))
+			}else{
+				conn.Write([]byte("not Exist\n"))
+			}
+		case "ZCOUNT":
+			if len(parts) != 1 {
+				conn.Write([]byte("ERR invalid ZCount command\n"))
+				continue
+			}
+			op := server.Op{
+				OpType:   server.ZCount,
+				Key:      parts[0],
+				ClientId: generateClientID(conn),
+				SeqId:    time.Now().UnixNano(),
+			} 
+			if _, _, isLeader := rf.Start(op); !isLeader {
+				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
+			}else{
+				count := bridge.Skiplist_Count()
+				// int 转为 string
+				s := strconv.Itoa(count)
+				conn.Write([]byte(s + "\n"))
 			}
 		// 返回该节点是不是leader
 		case "LEADER":

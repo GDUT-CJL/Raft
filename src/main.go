@@ -100,6 +100,7 @@ func main() {
 	<-sigCh
 
 	// 优雅关闭
+	bridge.DestoryStorage() // 释放内存
 	fmt.Println("\nShutting down all nodes...")
 	for _, node := range nodes {
 		node.kvServer.Kill()
