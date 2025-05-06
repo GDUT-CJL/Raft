@@ -8,7 +8,8 @@ import (
 
 type LogEntry struct{
 	Term		int			// 日志对应server的任期号
-	Command		interface{}	// 客户端的具体命令
+	//Command		interface{}	// 客户端的具体命令
+	Commands	[]interface{}	// 批量提交
 	CommandValid bool	// 标记该消息是否为有效的日志命令（true=有效，false=无效，如快照消息）。
 	CommandIndex int	// 日志的索引（即 Raft 日志中的位置），用于保证顺序性。
 }

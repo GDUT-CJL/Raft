@@ -164,7 +164,22 @@ func (rl *RaftLog)append(e LogEntry){
 func (rl *RaftLog)appendFrom(prevIndex int,entries []LogEntry){
 	rl.tailLog = append(rl.tailLog[:rl.idx(prevIndex)+1],entries...)
 }
+// raft_log.go (需要补充日志操作方法)
+// func (rl *RaftLog) slice(start, end int) []LogEntry {
+//     // 实现日志切片逻辑
+//     return rl.tailLog[start : end+1]
+// }
 
+// raft_log.go (需要补充日志操作方法)
+func (rl *RaftLog) slice(start, end int) []LogEntry {
+    if start < rl.snapLastIdx {
+        start = rl.snapLastIdx + 1
+    }
+    if end >= len(rl.tailLog) {
+        end = len(rl.tailLog) - 1
+    }
+    return rl.tailLog[start : end+1]
+}
 
 
 

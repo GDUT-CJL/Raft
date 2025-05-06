@@ -24,7 +24,7 @@ import (
 	"time"
 	//	"course/labgob"
 	"course/labrpc"
-
+	//"fmt"
 )
 // 定义最短和最长的超时时间分别为 250ms和400ms
 const(
@@ -58,8 +58,13 @@ const(
 // other uses.
 type ApplyMsg struct {
 	CommandValid bool	// 用于区分 普通日志命令 和 其他类型的消息（如快照）。
-	Command      interface{}
+	Command      []interface{}
 	CommandIndex int
+	
+	// 用于批量提交的字段
+	IsBatch	bool
+	BatchStartIdx	int
+	BatchSize	int
 
 	// For PartD:
 	SnapshotValid bool
@@ -182,7 +187,8 @@ func (rf *Raft) GetState() (int, bool) {
 // if it's ever committed. the second return value is the current
 // term. the third return value is true if this server believes it is
 // the leader.
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
+
+func (rf *Raft) Start(command []interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -190,18 +196,40 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.role != Leader{
 		return 0,0,false
 	}
-	
+
 	rf.log.append(LogEntry{
 		CommandValid: true,
-		Command:      command,
+		Commands:      command,
 		Term:         rf.currentTerm,
 	})
-
 	// Your code here (PartB).
 	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d", rf.log.size()-1, rf.currentTerm)
 	rf.persistLocked()
 	return rf.log.size() - 1, rf.currentTerm, true
 }
+
+// 将上面代码改为批量提交
+// func (rf *Raft) StartBatch(command []interface{}) (int, int, bool) {
+// 	rf.mu.Lock()
+// 	defer rf.mu.Unlock()
+
+// 	// 只有leader节点才能够操作日志，无论是set或者get等其他操作都必须是leader操作
+// 	if rf.role != Leader{
+// 		return 0,0,false
+// 	}
+	
+	
+// 	rf.log.append(LogEntry{
+// 		CommandValid: true,
+// 		Command:      command,
+// 		Term:         rf.currentTerm,
+// 	})
+
+// 	// Your code here (PartB).
+// 	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d", rf.log.size()-1, rf.currentTerm)
+// 	rf.persistLocked()
+// 	return rf.log.size() - 1, rf.currentTerm, true
+// }
 
 // the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to

@@ -34,7 +34,7 @@ func (rf *Raft)applyTicker(){
 			for i,entry := range entries{
 				rf.applyCh <- ApplyMsg{
 					CommandValid:entry.CommandValid,
-					Command:entry.Command,
+					Command:entry.Commands,
 					CommandIndex:rf.lastApplied + 1 + i, // 注意，rf.lastApplied + 1 + i 确保索引连续（例如，lastApplied=2，entries 有 2 条，则发送索引 3 和 4）
 				}
 			}
