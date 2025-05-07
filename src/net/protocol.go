@@ -17,7 +17,7 @@ import (
 var (
 	batchBuffer []server.Op  // 每个连接独立的缓冲区
     batchMutex 	sync.Mutex  // 每个连接独立的锁
-    batchSize   = 1 // 批量大小
+    batchSize   = 10000 // 批量大小
     batchTimer  = 50 * time.Millisecond
 )
 
@@ -37,23 +37,56 @@ func sendBatch(kv *server.KVServer, conn net.Conn, batch []server.Op,rf *raft.Ra
 	for _, op := range batch {
 		batchInterface = append(batchInterface, op)  
 	}  
-    if index, _, isLeader := rf.Start(batchInterface); isLeader {
-        kv.Lock()
-        notifyCh := kv.GetNotifyChannel(index)
-        kv.Unlock()
-
-        select {
-        case <-notifyCh:
-            conn.Write([]byte("BATCH_OK\n"))
-        case <-time.After(2 * time.Second):
-            conn.Write([]byte("BATCH_TIMEOUT\n"))
+    if batchInterface != nil{
+        if index, _, isLeader := rf.Start(batchInterface); isLeader {
+            kv.Lock()
+            notifyCh := kv.GetNotifyChannel(index)
+            kv.Unlock()
+    
+            select {
+            case <-notifyCh:
+                conn.Write([]byte("BATCH_OK\n"))
+            case <-time.After(2 * time.Second):
+                conn.Write([]byte("BATCH_TIMEOUT\n"))
+            }
+    
+            go func() {
+                kv.RemoveNotifyChannel(index)
+            }()
+        } else {
+            conn.Write([]byte("NOT_LEADER\n"))
         }
+    }else{
+        conn.Write([]byte("batchInterface is nil\n"))
+    }
 
-        go func() {
-            kv.RemoveNotifyChannel(index)
-        }()
-    } else {
-        conn.Write([]byte("NOT_LEADER\n"))
+}
+
+func Commited(optype server.OperationType,key string,value string,conn net.Conn,kv *server.KVServer,rf *raft.Raft){
+    if _,isLeader := rf.GetState();isLeader{
+        op := server.Op{
+            OpType:   optype,
+            Key:      key,
+            Value:    value,
+            ClientId: generateClientID(conn),
+            SeqId:    time.Now().UnixNano(),
+        }
+        batchMutex.Lock()
+        batchBuffer = append(batchBuffer, op)
+        if len(batchBuffer) >= batchSize {
+            // 妙用gc回收
+            currentBatch := make([]server.Op, len(batchBuffer))
+            copy(currentBatch, batchBuffer)
+            batchBuffer = nil
+            batchMutex.Unlock()
+            // 异步发送
+            go sendBatch(kv, conn, currentBatch,rf)
+        }else{
+            batchMutex.Unlock()
+        }
+        conn.Write([]byte("ACK\n"))
+    }else{
+        conn.Write([]byte("is not leader\n"))
     }
 }
 
@@ -66,7 +99,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
     rf := kv.GetRaft()
     reader := bufio.NewReader(conn)
     for {
-        // 读取直到遇到换行符,“set k1 v1;”规定命令格式为以 ';' 为结束符
+        // 读取直到遇到换行符,“set k1 v1\n”规定命令格式为以 '\n' 为结束符
         // 主要是为能够读取到完整的数据，以分号为结束符，避免粘包
         command, err := reader.ReadString('\n')
         if err != nil {
@@ -90,31 +123,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
                 conn.Write([]byte("Invalid SET command\n"))
                 continue
             }
-            if _,isLeader := rf.GetState();isLeader{
-                op := server.Op{
-                    OpType:   server.Set,
-                    Key:      parts[1],
-                    Value:    parts[2],
-                    ClientId: generateClientID(conn),
-                    SeqId:    time.Now().UnixNano(),
-                }
-                batchMutex.Lock()
-                batchBuffer = append(batchBuffer, op)
-                if len(batchBuffer) >= batchSize {
-                    // 妙用gc回收
-                    currentBatch := make([]server.Op, len(batchBuffer))
-                    copy(currentBatch, batchBuffer)
-                    batchBuffer = nil
-                    batchMutex.Unlock()
-                    // 异步发送
-                    go sendBatch(kv, conn, currentBatch,rf)
-                }else{
-                    batchMutex.Unlock()
-                }
-                conn.Write([]byte("ACK\n"))
-            }else{
-                conn.Write([]byte("is not leader\n"))
-            }
+        Commited(server.Set,parts[1],parts[2],conn,kv,rf)
         case "GET":
             if len(parts) != 2 {
                 conn.Write([]byte("ERR invalid GET command\n"))
@@ -126,6 +135,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
             } else {
                 conn.Write([]byte("nil\n"))
             }
+        
         case "LEADER":
             currentTerm, isLeader := kv.GetRaft().GetState()
             fmt.Printf("当前状态: %v, 当前任期: %d\n", isLeader, currentTerm)
