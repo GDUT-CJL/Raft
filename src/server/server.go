@@ -29,7 +29,7 @@ type KVServer struct {
 	dead    int32 // set by Kill()
 
 	maxraftstate int // snapshot if log grows this big
-
+	mapmu	sync.Mutex
 	// Your definitions here.
 	lastApplied    int
 
@@ -97,7 +97,7 @@ func (kv *KVServer) applyTask() {
                 var opReplies []*OpReply
                 var notifyChs []chan *OpReply
 				// 遍历获取net层缓存的每个命令进行执行
-                for _, opInterface := range message.Command {
+                for i, opInterface := range message.Command {
                     op, ok := opInterface.(Op)
                     if !ok {
                         continue
@@ -106,10 +106,14 @@ func (kv *KVServer) applyTask() {
 					// 线性一致性要求，如果是重复的请求则只会执行一次被称为“请求的幂等性”
 					// 避免重复请求的多次执行
                     if kv.requestDuplicated(op.ClientId, op.SeqId) {
+
                         opReply = kv.clientSeqTable[op.ClientId].Reply
                     } else {
 						// 应用到状态机中
                         opReply = kv.applyToStateMachine(op)
+						if i > 49000{
+							fmt.Printf("%s %s\n",op.Key,op.Value)
+						}
 						// 更新clientSeqTable数据
                         kv.clientSeqTable[op.ClientId] = LastOperationInfo{
                             SeqId: op.SeqId,
@@ -118,7 +122,9 @@ func (kv *KVServer) applyTask() {
                     }
 					// 为了防止死锁更改，先把每个回复的结果存储起来
                     opReplies = append(opReplies, opReply)
+					kv.mapmu.Lock()
                     notifyCh := kv.GetNotifyChannel(message.CommandIndex)
+					kv.mapmu.Unlock()
 					// 并且把每个通道也存储起来，最后一一的对应返回
                     notifyChs = append(notifyChs, notifyCh)
                 }

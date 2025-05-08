@@ -202,6 +202,7 @@ func (rf *Raft) Start(command []interface{}) (int, int, bool) {
 		Commands:      command,
 		Term:         rf.currentTerm,
 	})
+
 	// Your code here (PartB).
 	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d", rf.log.size()-1, rf.currentTerm)
 	rf.persistLocked()
