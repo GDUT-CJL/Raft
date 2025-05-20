@@ -1,19 +1,19 @@
 package main
 
 import (
+	"course/bridge"
+	"course/config"
+	"course/labrpc"
+	"course/net"
+	"course/raft"
+	"course/server"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
 	"time"
-	"course/bridge"
-	"course/labrpc"
-	"course/net"
-	"course/raft"
-	"course/server"
-	"course/config"
-	"flag"
 )
 
 var globalNetwork = labrpc.MakeNetwork()
@@ -24,30 +24,28 @@ type Node struct {
 }
 
 func startNode(id, port int, cluster []string) (*Node, error) {
-	fmt.Printf("[Node %d] Starting on port %d\n", id, port)
-
-	// 1. 创建RPC端点
 	peers := make([]*labrpc.ClientEnd, len(cluster))
 	for _, nodeStr := range cluster {
 		nodeID, _ := strconv.Atoi(nodeStr)
+		if nodeID == id {
+			continue // 跳过自身节点
+		}
 		endName := fmt.Sprintf("node-%d-to-%d", id, nodeID)
 		peers[nodeID] = globalNetwork.MakeEnd(endName)
-		
-		// 关键修复：Connect和AddServer使用相同的servername
-		globalNetwork.Connect(endName, nodeID) // nodeID作为servername
+
+		// 确保Connect和AddServer使用相同的servername
+		globalNetwork.Connect(endName, nodeID)
 		globalNetwork.Enable(endName, true)
 	}
 
-	// 2. 创建KV和Raft实例
+	// 后续逻辑保持不变
 	persister := raft.MakePersister()
-	kv := server.StartKVServer(peers, id, persister, -1) // -1代表暂时不需要进行snapshot
+	kv := server.StartKVServer(peers, id, persister, -1)
 
-	// 3. 注册Raft RPC服务
 	svc := labrpc.MakeServer()
 	svc.AddService(labrpc.MakeService(kv.GetRaft()))
-	globalNetwork.AddServer(id, svc) // 使用nodeID作为servername
+	globalNetwork.AddServer(id, svc)
 
-	// 4. 启动TCP服务
 	go net.StartTCPServer(kv, port)
 
 	return &Node{
@@ -59,10 +57,10 @@ func startNode(id, port int, cluster []string) (*Node, error) {
 func main() {
 	// 初始化存储
 	bridge.InitStorage()
-	path := flag.String("path","config/config.json","config path")
+	path := flag.String("path", "config/config.json", "config path")
 	flag.Parse()
 
-	configs,err := config.ParseEndpointsConfig(*path)
+	configs, err := config.ParseEndpointsConfig(*path)
 	if err != nil {
 		fmt.Printf("Error loading config: %v\n", err)
 		os.Exit(1)
@@ -92,7 +90,7 @@ func main() {
 	// 			break
 	// 		}
 	// 	}
-	// }()	
+	// }()
 
 	// 等待中断信号
 	sigCh := make(chan os.Signal, 1)

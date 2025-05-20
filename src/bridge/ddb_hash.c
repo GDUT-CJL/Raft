@@ -28,19 +28,19 @@ hashnode_t* _createNode(char* key,char* value){
     hashnode_t* node = (hashnode_t*)kvs_malloc(sizeof(hashnode_t));
     if(!node) return NULL;
 
-    node->key = (char*)kvs_malloc(sizeof(char));
+    node->key = (char*)kvs_malloc(strlen(key)+1);
     if(!node->key){
         kvs_free(node);
         return NULL;
     } 
-    node->value = (char*)kvs_malloc(sizeof(char));
+    node->value = (char*)kvs_malloc(strlen(value)+1);
     if(!node->value){
         kvs_free(node->key);
         kvs_free(node);
         return NULL;
     }
     strncpy(node->key,key,strlen(key)+1); 
-    strncpy(node->value,value,strlen(key)+1);
+    strncpy(node->value,value,strlen(value)+1);
     node->next = NULL;// 作为链表节点，这一步也很重要不要遗忘，方便以后添加
     return node; 
 }
