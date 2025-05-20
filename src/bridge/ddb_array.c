@@ -73,48 +73,102 @@ kvs_array_item_t* array_search_item(const char* key){
 	return NULL;
 }
 
-int kvs_array_insert_ttl(char* key,char* value,long long expired_time){
-	if(key == NULL || value == NULL || array_table->array_count == MAX_ARRAY_NUMS - 1) return -1;
-	_clean_expired_task();
-	pthread_mutex_lock(&array_table->array_mutex);
-	char* kcopy = (char*)kvs_malloc(strlen(key)+1);
-	if(!kcopy){
-		pthread_mutex_unlock(&array_table->array_mutex);
-		return -1;
-	} 
+int kvs_array_insert_ttl(char* key, char* value, long long expired_time) {
+    // 1. 检查输入有效性
+    if (key == NULL || value == NULL) {
+        fprintf(stderr, "Error: NULL key or value\n");
+        return -1;
+    }
 
-	char* vcopy = (char*)kvs_malloc(strlen(value)+1);
-	if(!vcopy){
-		pthread_mutex_unlock(&array_table->array_mutex);
-		kvs_free(kcopy);
-		return -1;
-	}
-	strncpy(kcopy,key,strlen(key)+1);
-	strncpy(vcopy,value,strlen(value)+1);
+    // 2. 复制key和value（避免外部修改影响数据）
+    char* kcopy = (char*)kvs_malloc(strlen(key) + 1);
+    if (!kcopy) {
+        fprintf(stderr, "Error: Failed to allocate key\n");
+        return -1;
+    }
+    char* vcopy = (char*)kvs_malloc(strlen(value) + 1);
+    if (!vcopy) {
+        kvs_free(kcopy);
+        fprintf(stderr, "Error: Failed to allocate value\n");
+        return -1;
+    }
+    strncpy(kcopy, key, strlen(key) + 1);
+    strncpy(vcopy, value, strlen(value) + 1);
 
-	//int* time_copy = (int*)kvs_malloc(sizeof(int));
-	//*time_copy = expired_time;
-#if 0
-	// 有问题，不能和delete配合，会发现delete完后count--数据会被覆盖
-	array_table[array_count].key = kcopy;
-	array_table[array_count].value = vcopy;
-	array_count++;
-#endif
-	int i = 0;
-	for(i = 0; i < MAX_ARRAY_NUMS;++i){
-		if(array_table->array[i].key == NULL && array_table->array[i].value == NULL)
-			break;
-	}
-	array_table->array[i].key = kcopy;
-	array_table->array[i].value = vcopy;
-	array_table->array[i].expired = expired_time;
-	array_table->array_count++;
-	pthread_mutex_unlock(&array_table->array_mutex);
-	return 0;
+    // 3. 加锁并插入数据
+    //pthread_mutex_lock(&array_table->array_mutex);
+
+    // 3.1 检查数组容量
+    if (array_table->array_count >= MAX_ARRAY_NUMS) {
+        //pthread_mutex_unlock(&array_table->array_mutex);
+        kvs_free(kcopy);
+        kvs_free(vcopy);
+        return -1;
+    }
+
+    // 3.2 执行插入
+    int insert_index = array_table->array_count;
+    array_table->array[insert_index].key = kcopy;
+    array_table->array[insert_index].value = vcopy;
+    array_table->array[insert_index].expired = expired_time;
+    array_table->array_count++;
+    //pthread_mutex_unlock(&array_table->array_mutex);
+    return 0;
 }
+
+// int kvs_array_insert_ttl(char* key, char* value, long long expired_time) {
+//     if (key == NULL || value == NULL || array_table->array_count >= MAX_ARRAY_NUMS)
+//         return -1;
+
+//     // 先进行非共享资源操作（内存申请和复制）
+//     char* kcopy = (char*)kvs_malloc(strlen(key) + 1);
+//     if (!kcopy) {
+//         return -1;
+//     }
+//     char* vcopy = (char*)kvs_malloc(strlen(value) + 1);
+//     if (!vcopy) {
+//         kvs_free(kcopy);
+//         return -1;
+//     }
+//     // 复制字符串
+//     strncpy(kcopy, key, strlen(key) + 1);
+//     strncpy(vcopy, value, strlen(value) + 1);
+
+//     // 先清理过期任务（不涉及共享结构，不加锁）
+//     //_clean_expired_task();
+
+//     int insert_index = -1;
+//     // 只在修改共享数据结构时加锁
+//     pthread_mutex_lock(&array_table->array_mutex);
+//     // 找空位
+//     for (int i = 0; i < MAX_ARRAY_NUMS; ++i) {
+//         if (array_table->array[i].key == NULL && array_table->array[i].value == NULL) {
+//             insert_index = i;
+//             break;
+//         }
+//     }
+
+//     // 检查空间是否足够
+//     if (insert_index == -1) {
+//         pthread_mutex_unlock(&array_table->array_mutex);
+//         kvs_free(kcopy);
+//         kvs_free(vcopy);
+//         return -1; // 数组已满
+//     }
+
+//     // 插入数据
+//     array_table->array[insert_index].key = kcopy;
+//     array_table->array[insert_index].value = vcopy;
+//     array_table->array[insert_index].expired = expired_time;
+//     array_table->array_count++;
+//     pthread_mutex_unlock(&array_table->array_mutex);
+
+//     return 0;
+// }
 
 // array set 
 int set(char* key,char* value){
+	if(array_search_item(key) != NULL)	return -1;
 	return kvs_array_insert_ttl(key,value,0);
 }
 
@@ -169,7 +223,7 @@ kvs_array_item_t* kvs_array_search_item(const char* key){
 	return NULL;
 }
 
-// array exist
+// array exist 存在：0 不存在-1
 int exist(const char* key){
 	kvs_array_item_t* get = kvs_array_search_item(key);
 	if(get){

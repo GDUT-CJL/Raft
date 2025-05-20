@@ -1,5 +1,6 @@
 #include "storage.h"
 int rb_count = 0;
+
 // 初始化NIL节点
 static void initNIL() {
     NIL = (RBNode*)kvs_malloc(sizeof(RBNode));
