@@ -61,23 +61,25 @@ import (
 	"time"
 )
 
+// reqMsg和replyMsg定义 RPC 请求和回复的消息格式
 type reqMsg struct {
-	endname  interface{} // name of sending ClientEnd
-	svcMeth  string      // e.g. "Raft.AppendEntries"
-	argsType reflect.Type
-	args     []byte
-	replyCh  chan replyMsg
+	endname  interface{}   // name of sending ClientEnd 终端名称
+	svcMeth  string        // e.g. "Raft.AppendEntries" RPC 方法名
+	argsType reflect.Type  //参数类型
+	args     []byte        // 编码后的参数
+	replyCh  chan replyMsg //回复通道
 }
 
 type replyMsg struct {
-	ok    bool
-	reply []byte
+	ok    bool   //操作是否成功
+	reply []byte //编码后的回复数据
 }
+
 // 客户端端点，用于发起RPC调用
 type ClientEnd struct {
-	endname interface{}   // this end-point's name
-	ch      chan reqMsg   // copy of Network.endCh
-	done    chan struct{} // closed when Network is cleaned up
+	endname interface{}   // this end-point's name 终端唯一标识
+	ch      chan reqMsg   // copy of Network.endCh 用于发送请求到网络层的通道
+	done    chan struct{} // closed when Network is cleaned up 网络关闭时通知终端停止的通道
 }
 
 // send an RPC, wait for the reply.
@@ -140,10 +142,11 @@ type Network struct {
 	count          int32         // total RPC count, for statistics
 	bytes          int64         // total bytes send, for statistics
 }
+
 /*
-	管理客户端和服务器的连接
-	可以模拟不可靠网络（随机延迟、丢包、乱序）
-	提供统计功能（RPC计数、字节数）
+管理客户端和服务器的连接
+可以模拟不可靠网络（随机延迟、丢包、乱序）
+提供统计功能（RPC计数、字节数）
 */
 func MakeNetwork() *Network {
 	rn := &Network{}

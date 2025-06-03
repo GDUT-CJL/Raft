@@ -25,6 +25,9 @@ var (
 	skiplistLock sync.RWMutex
 )
 
+func InitMemPool() {
+	C.initPool()
+}
 func InitStorage() {
 	C.init_btree(C.int(5))
 	C.init_array()
@@ -46,8 +49,8 @@ var arrayCounter int64 // 原子计数器
 func Array_Set(key, value string) string {
 	cKey := C.CString(key)
 	cValue := C.CString(value)
-	defer C.free(unsafe.Pointer(cKey))
-	defer C.free(unsafe.Pointer(cValue))
+	defer C.kvs_free(unsafe.Pointer(cKey))
+	defer C.kvs_free(unsafe.Pointer(cValue))
 
 	if ret := C.set(cKey, cValue); ret == 0 {
 		atomic.AddInt64(&arrayCounter, 1)
@@ -58,14 +61,14 @@ func Array_Set(key, value string) string {
 
 func Array_Get(key string) string {
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey))
+	defer C.kvs_free(unsafe.Pointer(cKey))
 	cValue := C.get(cKey)
 	return C.GoString(cValue)
 }
 
 func Array_Delete(key string) string {
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	defer C.kvs_free(unsafe.Pointer(cKey)) // 释放 C 字符串
 	cRet := C.delete(cKey)
 	if cRet == 0 {
 		return "OK"
@@ -79,7 +82,7 @@ func Array_Count() int {
 
 func Array_Exist(key string) int {
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	defer C.kvs_free(unsafe.Pointer(cKey)) // 释放 C 字符串
 	ret := C.exist(cKey)
 	return int(ret)
 }
@@ -88,8 +91,8 @@ func Array_Exist(key string) int {
 func Hash_Set(key, value string) string {
 	cKey := C.CString(key)
 	cValue := C.CString(value)
-	defer C.free(unsafe.Pointer(cKey))
-	defer C.free(unsafe.Pointer(cValue))
+	defer C.kvs_free(unsafe.Pointer(cKey))
+	defer C.kvs_free(unsafe.Pointer(cValue))
 	ret := C.hset(cKey, cValue)
 	if ret == 0 {
 		return "OK"
@@ -99,14 +102,14 @@ func Hash_Set(key, value string) string {
 
 func Hash_Get(key string) string {
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey))
+	defer C.kvs_free(unsafe.Pointer(cKey))
 	cValue := C.hget(cKey)
 	return C.GoString(cValue)
 }
 
 func Hash_Delete(key string) string {
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey))
+	defer C.kvs_free(unsafe.Pointer(cKey))
 
 	cRet := C.hdelete(cKey)
 	if cRet == 0 {
@@ -121,7 +124,7 @@ func Hash_Count() int {
 
 func Hash_Exist(key string) int {
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	defer C.kvs_free(unsafe.Pointer(cKey)) // 释放 C 字符串
 	ret := C.hexist(cKey)
 	return int(ret)
 }
@@ -134,8 +137,8 @@ func RB_Set(key, value string) string {
 	defer rbTreeLock.RUnlock()
 	cKey := C.CString(key)
 	cValue := C.CString(value)
-	defer C.free(unsafe.Pointer(cKey))
-	defer C.free(unsafe.Pointer(cValue))
+	defer C.kvs_free(unsafe.Pointer(cKey))
+	defer C.kvs_free(unsafe.Pointer(cValue))
 	if ret := C.rset(cKey, cValue); ret == 0 {
 		atomic.AddInt64(&rbCounter, 1)
 		return "OK"
@@ -148,7 +151,7 @@ func RB_Get(key string) string {
 	defer rbTreeLock.RUnlock()
 
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey))
+	defer C.kvs_free(unsafe.Pointer(cKey))
 
 	cValue := C.rget(cKey)
 	if cValue == nil {
@@ -164,7 +167,7 @@ func RB_Count() int {
 
 func RB_Delete(key string) string {
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey)) // Don't forget to free the C string
+	defer C.kvs_free(unsafe.Pointer(cKey)) // Don't forget to free the C string
 
 	cRet := C.rdelete(cKey)
 	if cRet == 0 {
@@ -179,7 +182,7 @@ func RB_Delete(key string) string {
 
 func RB_Exist(key string) int {
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	defer C.kvs_free(unsafe.Pointer(cKey)) // 释放 C 字符串
 	ret := C.rexist(cKey)
 	return int(ret)
 }
@@ -193,8 +196,8 @@ func BTree_Set(key, value string) string {
 	if cKey == nil || cValue == nil {
 		fmt.Println("invalid pointers")
 	}
-	defer C.free(unsafe.Pointer(cKey))
-	defer C.free(unsafe.Pointer(cValue))
+	defer C.kvs_free(unsafe.Pointer(cKey))
+	defer C.kvs_free(unsafe.Pointer(cValue))
 	ret := C.bset(cKey, cValue)
 	if ret == 0 {
 		return "OK"
@@ -204,14 +207,14 @@ func BTree_Set(key, value string) string {
 
 func BTree_Get(key string) string {
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey))
+	defer C.kvs_free(unsafe.Pointer(cKey))
 	cValue := C.bget(cKey)
 	return C.GoString(cValue)
 }
 
 func BTree_Delete(key string) string {
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey)) // Don't forget to free the C string
+	defer C.kvs_free(unsafe.Pointer(cKey)) // Don't forget to free the C string
 
 	cRet := C.bdelete(cKey)
 	if cRet == 0 {
@@ -226,7 +229,7 @@ func BTree_Count() int {
 
 func BTree_Exist(key string) int {
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	defer C.kvs_free(unsafe.Pointer(cKey)) // 释放 C 字符串
 	ret := C.bexist(cKey)
 	return int(ret)
 }
@@ -239,8 +242,8 @@ func Skiplist_Set(key, value string) string {
 	defer skiplistLock.Unlock()
 	cKey := C.CString(key)
 	cValue := C.CString(value)
-	defer C.free(unsafe.Pointer(cKey))
-	defer C.free(unsafe.Pointer(cValue))
+	defer C.kvs_free(unsafe.Pointer(cKey))
+	defer C.kvs_free(unsafe.Pointer(cValue))
 	if ret := C.zset(cKey, cValue); ret == 0 {
 		atomic.AddInt64(&skCounter, 1)
 		return "OK"
@@ -250,14 +253,14 @@ func Skiplist_Set(key, value string) string {
 
 func Skiplist_Get(key string) string {
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey))
+	defer C.kvs_free(unsafe.Pointer(cKey))
 	cValue := C.zget(cKey)
 	return C.GoString(cValue)
 }
 
 func Skiplist_Delete(key string) string {
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey)) // Don't forget to free the C string
+	defer C.kvs_free(unsafe.Pointer(cKey)) // Don't forget to free the C string
 
 	cRet := C.zdelete(cKey)
 	if cRet == 0 {
@@ -273,7 +276,7 @@ func Skiplist_Count() int {
 
 func Skiplist_Exist(key string) int {
 	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	defer C.kvs_free(unsafe.Pointer(cKey)) // 释放 C 字符串
 	ret := C.zexist(cKey)
 	return int(ret)
 }

@@ -10,17 +10,17 @@
     RBTree的count值不对
     skiplist的count值不对
 */
-#define ENABLE_ARRAY_TEST   1
+#define ENABLE_ARRAY_TEST   0
 #define ENABLE_RBTREE_TEST   0 
 #define ENABLE_HASHTABLE_TEST   0
 #define ENABLE_SKIPLIST_TEST   0
-#define ENABLE_BTREE_TEST       0
+#define ENABLE_BTREE_TEST       1
 #define ENABLE_DHASH_TEST       0
 
 
 #define ENABLE_LOG   0
 
-#define MAX_REQUEST_NUM			10000
+#define MAX_REQUEST_NUM			30000
 #define TIME_SUB_MS(tv1, tv2)  ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000)
 
 #define LOG(_fmt, ...) fprintf(stdout, "[%s:%d] " _fmt, __FILE__, __LINE__, __VA_ARGS__)

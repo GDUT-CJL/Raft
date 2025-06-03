@@ -128,9 +128,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	//fmt.Printf("节点 %d 尝试向节点 %d 发送 RequestVote（任期 %d）\n", rf.me, server, args.Term)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	// if !ok {
-	//     fmt.Printf("节点 %d 到节点 %d 的 RPC 调用失败\n", rf.me, server)
-	// }
 	return ok
 }
 
@@ -194,6 +191,7 @@ func (rf *Raft) startElection(term int) {
 			LastLogTerm:  rf.log.at(l - 1).Term,
 		}
 		// 另起go程向其他RPC节点要票
+		// 需要超时间IO的需要另起协程，及时释放锁
 		go askVoteFromPeer(peer, args)
 	}
 }

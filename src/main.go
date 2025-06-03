@@ -55,6 +55,8 @@ func startNode(id, port int, cluster []string) (*Node, error) {
 }
 
 func main() {
+	// 初始化内存池
+	bridge.InitMemPool()
 	// 初始化存储
 	bridge.InitStorage()
 	path := flag.String("path", "config/config.json", "config path")

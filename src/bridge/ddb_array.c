@@ -61,7 +61,7 @@ void dest_array(){
 
 kvs_array_item_t* array_search_item(const char* key){
 	if(!key) return NULL;
-	_clean_expired_task();
+	//_clean_expired_task();
 	for(int idx = 0; idx < MAX_ARRAY_NUMS;idx++){
 		if (array_table->array[idx].key == NULL) {
 			continue;
