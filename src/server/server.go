@@ -3,7 +3,6 @@ package server
 import (
 	"course/bridge"
 	"course/labgob"
-	"course/labrpc"
 	"course/raft"
 	"fmt"
 	"sync"
@@ -57,7 +56,7 @@ func (kv *KVServer) Unlock() {
 	kv.mu.Unlock()
 }
 
-func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
+func StartKVServer(servers []string, me int, persister *raft.Persister, maxraftstate int) *KVServer {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})

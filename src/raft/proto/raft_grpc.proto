@@ -1,0 +1,58 @@
+// protoc --go_out=. --go-grpc_out=. raft_grpc.proto
+syntax ="proto3";
+
+//这部分的内容是关于最后生成的go文件是处在哪个目录哪个包中，.代表在当前目录生成，raft代表了生成的go文件的包名是raft。
+option go_package ="..;raft";
+
+//然后我们需要定义一个服务，在这个服务中需要有一个方法，这个方法可以接受客户端的参数，再返回服务端的响应。
+//其实很容易可以看出，我仰定义了一个service,称为Grpc_RequestVote,这个服务中有一个rpc方法，名为Grpc_RequestVote。
+//这个方法会发送-个G_RequestVoteArgs,然后返回一个G_RequestVoteReply。
+service RaftGrpc{
+  rpc Grpc_RequestVote(G_RequestVoteArgs)returns (G_RequestVoteReply){}
+  rpc Grpc_AppendEntries(G_AppendEntriesArgs)returns (G_AppendEntriesReply){}
+  rpc Grpc_InstallSnapshot(G_InstallSnapshotArgs)returns (G_InstallSnapshotReply){}
+}
+//message关键字，其实你可以理解为Go1ang中的结构体。
+//这里比较特别的是变量后面的“赋值”。注意，这里并不是赋值，而是在定义这个变量在这个message中的位置。
+message G_RequestVoteArgs{
+	int32 Term = 1;
+	int32 CandidateId = 2;
+	int32 LastLogIndex = 3;
+	int32 LastLogTerm = 4;
+}
+message G_RequestVoteReply{
+  	int32   Term = 1;
+	bool    VoteGranted = 2;
+}
+
+message G_LogEntry {
+  	int64 Term = 1;
+  	bool CommandValid = 2;
+  	bytes Command = 3;  // 使用 bytes 类型代替 interface{}
+}
+message G_AppendEntriesArgs{
+  	int64 Term = 1;
+  	int64 LeaderId = 2;
+  	int64 PrevLogIndex = 3;
+ 	int64 PrevLogTerm = 4;
+  	repeated G_LogEntry Entries = 5;  // 使用 repeated 表示数组
+  	int64 LeaderCommit = 6;
+}
+message G_AppendEntriesReply{
+	int64 Term = 1;
+	bool Success = 2;
+	int64 ConflictIndex = 3;
+	int64 ConflictTerm = 4;
+}
+
+
+message G_InstallSnapshotArgs{
+	int64 Term = 1;    
+	int64 LeaderId = 2;
+	int64 LastIncludedIndex = 3;
+	int64 LastIncludedTerm = 4;
+	bytes Snapshot = 5;
+}
+message G_InstallSnapshotReply{
+	int64 Term = 1;
+}

@@ -19,15 +19,23 @@ package raft
 
 import (
 	//	"bytes"
+
+	"fmt"
+	"log"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 	//	"course/labgob"
-	"course/labrpc"
 
+	// 替换为实际的 proto 包路径
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
+
 // 定义最短和最长的超时时间分别为 250ms和400ms
-const(
+const (
 	MinElectionTimeout time.Duration = 250 * time.Millisecond
 	MaxElectionTimeout time.Duration = 400 * time.Millisecond
 
@@ -35,16 +43,17 @@ const(
 )
 
 const (
-	InvalidIndex int = 0	// 空的日志号
-	InvalidTerm  int = 0	// 空的任期号
+	InvalidIndex int = 0 // 空的日志号
+	InvalidTerm  int = 0 // 空的任期号
 )
 
 // 定义三种状态
 type Role string
-const(
-	Follower Role = "Follower"
+
+const (
+	Follower  Role = "Follower"
 	Candidate Role = "Candidate"
-	Leader Role = "Leader"
+	Leader    Role = "Leader"
 )
 
 // as each Raft peer becomes aware that successive log entries are
@@ -57,7 +66,7 @@ const(
 // snapshots) on the applyCh, but set CommandValid to false for these
 // other uses.
 type ApplyMsg struct {
-	CommandValid bool	// 用于区分 普通日志命令 和 其他类型的消息（如快照）。
+	CommandValid bool // 用于区分 普通日志命令 和 其他类型的消息（如快照）。
 	Command      interface{}
 	CommandIndex int
 
@@ -70,72 +79,72 @@ type ApplyMsg struct {
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
-	peers     []*labrpc.ClientEnd // RPC end points of all peers
-	persister *Persister          // Object to hold this peer's persisted state
-	me        int                 // this peer's index into peers[]
-	dead      int32               // set by Kill()
+	mu        sync.Mutex         // Lock to protect shared access to this peer's state
+	peers     []RaftGrpcClient   // gRPC 客户端列表
+	conns     []*grpc.ClientConn // 保存 gRPC 连接
+	persister *Persister         // Object to hold this peer's persisted state
+	me        int                // this peer's index into peers[]
+	dead      int32              // set by Kill()
 
 	// Your data here (PartA, PartB, PartC).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	role 		Role			// 三种角色
-	currentTerm int				// 当前任期
-	votedFor 	int 			// 投票给谁
+	role        Role // 三种角色
+	currentTerm int  // 当前任期
+	votedFor    int  // 投票给谁
 
-	electionStart time.Time		// 选举开始标志
-	eletionTimout time.Duration	// 随机超时时间	
+	electionStart time.Time     // 选举开始标志
+	eletionTimout time.Duration // 随机超时时间
 
-	log         *RaftLog	// 日志
+	log *RaftLog // 日志
 	// only used when it is Leader,
 	// log view for each peer
 
 	// 本质上来说，下面这两个字段是各个 Peer 中日志进度在 Leader 中的一个视图（view）。
 	// Leader 正是依据此视图来决定给各个 Peer 发送多少日志。也是依据此视图，Leader 可以计算全局的 `commitIndex`。
-	nextIndex  []int	// 发送到该服务器的下一个日志号（初始值为领导人最后的日志号+1）
-	matchIndex []int	// 记录了 Leader 已知的每个 follower 已经复制的最高日志索引（初始值为0）
+	nextIndex  []int // 发送到该服务器的下一个日志号（初始值为领导人最后的日志号+1）
+	matchIndex []int // 记录了 Leader 已知的每个 follower 已经复制的最高日志索引（初始值为0）
 
-	commitIndex	int		// 已知已提交的最高的日志条目的索引（初始值为0，单调递增）
-	lastApplied	int		// 已经被应用到状态机的最高的日志条目的索引（初始值为0，单调递增）
-	applyCond	*sync.Cond	// 唤醒提交日志索引更新
-	applyCh		chan ApplyMsg	//将 applyMsg 通过构造 Peer 时传进来的 channel 返回给应用层，即上层模块（如kv数据库）与当前的raft层的联系
+	commitIndex   int           // 已知已提交的最高的日志条目的索引（初始值为0，单调递增）
+	lastApplied   int           // 已经被应用到状态机的最高的日志条目的索引（初始值为0，单调递增）
+	applyCond     *sync.Cond    // 唤醒提交日志索引更新
+	applyCh       chan ApplyMsg //将 applyMsg 通过构造 Peer 时传进来的 channel 返回给应用层，即上层模块（如kv数据库）与当前的raft层的联系
 	snapAppending bool
 }
 
-func (rf *Raft) GetPeerLen() int{
+func (rf *Raft) GetPeerLen() int {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return len(rf.peers)
 }
 
-
 // 将调用此函数的节点转换状态成为follower，任期更改为传入参数term
-func (rf *Raft)becomeFollowerLocked(term int){
-	if rf.currentTerm > term{//如果当前任期大于term，说明我还不能成为follower，因为我的任期比较大
-		LOG(rf.me,rf.currentTerm,DError,"Can not be a Follower,lower term:T%d",term)
+func (rf *Raft) becomeFollowerLocked(term int) {
+	if rf.currentTerm > term { //如果当前任期大于term，说明我还不能成为follower，因为我的任期比较大
+		LOG(rf.me, rf.currentTerm, DError, "Can not be a Follower,lower term:T%d", term)
 		return
 	}
 
-	LOG(rf.me,rf.currentTerm,DVote,"%s -> Follower,For T%v->T%v",rf.role,rf.currentTerm,term)
-	rf.role = Follower	// 否则我的任期不大于term，那我成为follower
+	LOG(rf.me, rf.currentTerm, DVote, "%s -> Follower,For T%v->T%v", rf.role, rf.currentTerm, term)
+	rf.role = Follower // 否则我的任期不大于term，那我成为follower
 	shouldPersist := rf.currentTerm != term
-	if rf.currentTerm < term{ // 如果是小于term
+	if rf.currentTerm < term { // 如果是小于term
 		rf.votedFor = -1 // 初始化我的票数为-1，表示我有选票还没投
 	}
 	rf.currentTerm = term // 将我当前的任期改为你的任期
-	if shouldPersist{
+	if shouldPersist {
 		rf.persistLocked()
 	}
 }
 
 // 将调用此函数的节点转换状态成为candidate
-func (rf *Raft)becomeCandidateLocked(){
-	if rf.role == Leader{	// 如果我已经是leader我就无法变为candidate
-		LOG(rf.me,rf.currentTerm,DError ,"Leader can not be a Candidate")
+func (rf *Raft) becomeCandidateLocked() {
+	if rf.role == Leader { // 如果我已经是leader我就无法变为candidate
+		LOG(rf.me, rf.currentTerm, DError, "Leader can not be a Candidate")
 		return
 	}
 
-	LOG(rf.me,rf.currentTerm,DVote,"%s->Candidate,For T%d",rf.role,rf.currentTerm+1)
+	LOG(rf.me, rf.currentTerm, DVote, "%s->Candidate,For T%d", rf.role, rf.currentTerm+1)
 	// 成为candidate，任期自增1，投票给自己
 	rf.currentTerm++
 	rf.role = Candidate
@@ -144,17 +153,17 @@ func (rf *Raft)becomeCandidateLocked(){
 }
 
 // 将调用此函数的节点转换状态成为leader
-func (rf *Raft)becomeLeaderLocked(){
-	if rf.role != Candidate{
-		LOG(rf.me,rf.currentTerm,DError ,"Only Candidate can be a Leader")
-		return 
+func (rf *Raft) becomeLeaderLocked() {
+	if rf.role != Candidate {
+		LOG(rf.me, rf.currentTerm, DError, "Only Candidate can be a Leader")
+		return
 	}
 	// 成为leader后需初始化nextIndex和matchIndex
-	LOG(rf.me,rf.currentTerm,DVote,"%s->Leader,For T%d",rf.role,rf.currentTerm)
-	rf.role = Leader//成为leader
-	for peer:=0;peer < len(rf.peers); peer++{
-		rf.nextIndex[peer] = rf.log.size()// 初始化为日志长度，有效索引其实是 0 - (len -1),所以下一个是len    
-		rf.matchIndex[peer] = 0	//先初始化为0
+	LOG(rf.me, rf.currentTerm, DVote, "%s->Leader,For T%d", rf.role, rf.currentTerm)
+	rf.role = Leader //成为leader
+	for peer := 0; peer < len(rf.peers); peer++ {
+		rf.nextIndex[peer] = rf.log.size() // 初始化为日志长度，有效索引其实是 0 - (len -1),所以下一个是len
+		rf.matchIndex[peer] = 0            //先初始化为0
 	}
 }
 
@@ -187,10 +196,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	defer rf.mu.Unlock()
 
 	// 只有leader节点才能够操作日志，无论是set或者get等其他操作都必须是leader操作
-	if rf.role != Leader{
-		return 0,0,false
+	if rf.role != Leader {
+		return 0, 0, false
 	}
-	
+
 	rf.log.append(LogEntry{
 		CommandValid: true,
 		Command:      command,
@@ -221,15 +230,17 @@ func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
 }
+
 // 状态一致性是实现高可用性和准确性的基础，只有在正确的一致性检查的条件下才可以继续执行代码
 // 即在一个任期内，只要你的角色没有变化，就能放心地推进状态机。
-func (rf* Raft)contextLostLocked(role Role,term int) bool{
+func (rf *Raft) contextLostLocked(role Role, term int) bool {
 	return !(rf.currentTerm == term && rf.role == role)
 }
 
-func MakeRaft() *Raft{
+func MakeRaft() *Raft {
 	return &Raft{}
 }
+
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -239,10 +250,11 @@ func MakeRaft() *Raft{
 // tester or service expects Raft to send ApplyMsg messages.
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
-func Make(peers []*labrpc.ClientEnd, me int,
+func Make(peerAddrs []string, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
-	rf.peers = peers
+	rf.peers = make([]RaftGrpcClient, len(peerAddrs))
+	rf.conns = make([]*grpc.ClientConn, len(peerAddrs))
 	rf.persister = persister
 	rf.me = me
 	// Your initialization code here (PartA, PartB, PartC).
@@ -250,13 +262,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 1
 	rf.votedFor = -1
 
-
 	// log初始化为空，类似于一个空的头节点，避免边界的检查
 	//rf.log.append(LogEntry{Term:InvalidTerm})
-	rf.log = NewLog(InvalidIndex,InvalidTerm,nil,nil)
+	rf.log = NewLog(InvalidIndex, InvalidTerm, nil, nil)
 
-	rf.nextIndex = make([]int,len(rf.peers))
-	rf.matchIndex = make([]int,len(rf.peers))
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
 
 	rf.commitIndex = 0
 	rf.lastApplied = 0
@@ -265,9 +276,52 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.snapAppending = false
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	go func() {
+		// 监听自己对应的ip和端口
+		lis, err := net.Listen("tcp", peerAddrs[me]) // 使用配置的地址
+		if err != nil {
+			fmt.Println("failed here")
+			log.Fatalf("failed to listen: %v", err)
+		}
+
+		// 注册到rpc网络中，成为rpc网络中的一个节点
+		grpcServer := grpc.NewServer()
+		RegisterRaftGrpcServer(
+			grpcServer,
+			NewServer(rf), // 传入当前 Raft 实例
+		)
+
+		LOG(rf.me, rf.currentTerm, DDebug, "gRPC server started on %s", peerAddrs[me])
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Fatalf("failed to serve: %v", err)
+		}
+
+	}()
+
+	// 创建 gRPC 客户端连接
+	// 节点自己：用net.Listen在自己的地址上监听，形成RPC服务端，等待其他节点连接。
+	// 其他节点：用grpc.Dial()连接到这个地址，作为RPC客户端，发出请求。
+	for i, addr := range peerAddrs {
+		if i == me {
+			rf.peers[i] = nil // 不需要连接自己
+			continue
+		}
+		fmt.Printf("romote rpc:%s\n", addr)
+		conn, err := grpc.Dial(
+			addr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			//grpc.WithBlock(), // 可选：阻塞直到连接建立,如果选择可能会造成阻塞主进程
+		)
+		if err != nil {
+			log.Fatalf("did not connect: %v", err)
+			continue // 继续而不是退出，允许节点部分连接失败
+		}
+		rf.conns[i] = conn
+		rf.peers[i] = NewRaftGrpcClient(conn)
+	}
 	// start ticker goroutine to start elections
 	go rf.electionticker() // 每创建一个raft就可以一直循环触发选举操作
-	go rf.applyTicker()	// 每创建一个raft就启动日志复制的操作，在里面有cond等待唤醒
+	go rf.applyTicker()    // 每创建一个raft就启动日志复制的操作，在里面有cond等待唤醒
 
 	return rf
 }
