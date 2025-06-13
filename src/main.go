@@ -49,7 +49,7 @@ func startNode(cfg config.NodeConfig, clusterConfigs []config.NodeConfig, nodeId
 
 func main() {
 	// 解析命令行参数
-	//bridge.InitMemPool()
+	bridge.InitMemPool()
 	configPath := flag.String("config", "config/config.json", "Path to cluster configuration file")
 	configId := flag.Int("id", 0, "node id")
 	flag.Parse()
