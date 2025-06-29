@@ -8,7 +8,7 @@ import (
 	"course/bridge"
 	"course/config"
 	"course/mnet"
-	"course/raft"
+	//"course/raft"
 	"course/server"
 	"os"
 	"os/signal"
@@ -31,12 +31,12 @@ func startNode(cfg config.NodeConfig, clusterConfigs []config.NodeConfig, nodeId
 	}
 
 	// 创建持久化存储
-	persister := raft.MakePersister()
+	// persister := raft.MakePersister()
 	// 创建KV服务器
 	var kv *server.KVServer
 	if cfg.ID == nodeId {
 		fmt.Printf("nodeId :%d,cfg.ID = %d\n", nodeId, cfg.ID)
-		kv = server.StartKVServer(rpcAddrs, cfg.ID, persister, -1)
+		kv = server.StartKVServer(rpcAddrs, cfg.ID, -1)
 
 		go mnet.StartTCPServer(kv, cfg.ClientAddr, cfg.ID)
 	}

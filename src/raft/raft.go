@@ -250,12 +250,11 @@ func MakeRaft() *Raft {
 // tester or service expects Raft to send ApplyMsg messages.
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
-func Make(peerAddrs []string, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
+func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = make([]RaftGrpcClient, len(peerAddrs))
 	rf.conns = make([]*grpc.ClientConn, len(peerAddrs))
-	rf.persister = persister
+	rf.persister = MakePersister(me)
 	rf.me = me
 	// Your initialization code here (PartA, PartB, PartC).
 	rf.role = Follower
@@ -275,7 +274,7 @@ func Make(peerAddrs []string, me int,
 	rf.applyCond = sync.NewCond(&rf.mu)
 	rf.snapAppending = false
 	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
+	rf.readPersist(rf.persister.ReadRaftState())
 	go func() {
 		// 监听自己对应的ip和端口
 		lis, err := net.Listen("tcp", peerAddrs[me]) // 使用配置的地址

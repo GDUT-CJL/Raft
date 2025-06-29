@@ -4,6 +4,7 @@ import (
 	"course/bridge"
 	"course/labgob"
 	"course/raft"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -56,7 +57,7 @@ func (kv *KVServer) Unlock() {
 	kv.mu.Unlock()
 }
 
-func StartKVServer(servers []string, me int, persister *raft.Persister, maxraftstate int) *KVServer {
+func StartKVServer(servers []string, me int, maxraftstate int) *KVServer {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
@@ -68,7 +69,7 @@ func StartKVServer(servers []string, me int, persister *raft.Persister, maxrafts
 	// You may need initialization code here.
 
 	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.rf = raft.Make(servers, me, kv.applyCh)
 
 	// You may need initialization code here.
 	kv.dead = 0
@@ -96,7 +97,28 @@ func (kv *KVServer) applyTask() {
 				fmt.Printf("Type of command: %T\n", message.Command)
 
 				// 这行代码使用了类型断言（type assertion），它的主要作用是将 message.Command 转换为 Op 类型
-				op := message.Command.(Op)
+				var op Op
+				// 判断实际类型
+				switch cmd := message.Command.(type) {
+				case Op:
+					op = cmd
+				case map[string]interface{}:
+					// 如果是map类型，手动映射到Op,因为在grpc中我们使用json序列化
+					// 且我们清楚的知道map中的字段对应Op的字段
+					// 因此可以用json反序列化再转成Op，避免繁琐映射
+					b, err := json.Marshal(cmd)
+					if err == nil {
+						json.Unmarshal(b, &op)
+					} else {
+						// 错误处理
+						kv.mu.Unlock()
+						continue
+					}
+				default:
+					// 其他类型不处理
+					kv.mu.Unlock()
+					continue
+				}
 				var opReply *OpReply
 				// 线性一致性要求，如果是重复的请求则只会执行一次被称为“请求的幂等性”
 				// 避免重复请求的多次执行
