@@ -78,7 +78,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 检查任期号是否一致，只有日志号和任期号一致才可以返回成功
 	if rf.log.at(args.PrevLogIndex).Term != args.PrevLogTerm {
 		reply.ConfilictTerm = rf.log.at(args.PrevLogIndex).Term
-		reply.ConfilictIndex = rf.log.firstFor(reply.ConfilictTerm) // 找到这个任期的第一个日志
+		reply.ConfilictIndex = rf.log.firstFor(reply.ConfilictTerm) // 在follower找到这个任期的第一个日志，Leader可以据此快速移动其匹配位置，缩短同步时间。
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d,Reject log,Pre Log not match,[%d]: T%d != T%d", args.LeaderId, args.PrevLogTerm, rf.log.at(args.PrevLogIndex).Term)
 		return
 	}

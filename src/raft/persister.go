@@ -20,8 +20,8 @@ import (
 // 定义存储目录和文件名
 const (
 	persistDir    = "raft-persist"
-	raftStateFile = "raftstate.bin"
-	snapshotFile  = "snapshot.bin"
+	raftStateFile = "raftstate.bin" // 存储raftstate的文件路径
+	snapshotFile  = "snapshot.bin"  //  存储snapshot的文件路径
 )
 
 type Persister struct {
@@ -30,6 +30,7 @@ type Persister struct {
 }
 
 func MakePersister(me int) *Persister {
+	// filepath.Join 函数用于拼接路径
 	peerDir := filepath.Join(persistDir, fmt.Sprintf("peer%d", me))
 	// 确保目录存在
 	os.MkdirAll(peerDir, 0755)

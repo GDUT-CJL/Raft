@@ -65,9 +65,16 @@ func (rf *Raft) readPersist(data []byte) {
 	// 反序列化快照信息
 	rf.log.snapshot = rf.persister.ReadSnapshot()
 	// 如果快照的索引大于本地的提交日志的索引，则要进行更新
-	if rf.log.snapLastIdx > rf.commitIndex {
-		rf.commitIndex = rf.log.snapLastIdx
-		rf.lastApplied = rf.log.snapLastIdx
+	if rf.log.snapshot != nil && rf.log.snapLastIdx > 0 {
+		rf.snapAppending = true
+		rf.applyCond.Signal() // 唤醒applyTicker
+
+		if rf.log.snapLastIdx > rf.commitIndex {
+			rf.commitIndex = rf.log.snapLastIdx
+		}
+		if rf.log.snapLastIdx > rf.lastApplied {
+			rf.lastApplied = rf.log.snapLastIdx
+		}
 	}
 	LOG(rf.me, rf.currentTerm, DPersist, "Read Persist %v", rf.PersistStates())
 }
