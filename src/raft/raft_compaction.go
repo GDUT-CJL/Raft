@@ -122,12 +122,6 @@ func (rf *Raft) InstallToPeer(peer, term int, args *InstallSnapshotArgs) {
 		return                              //返回
 	}
 
-	// 检查自己的上下文状态是否变化
-	// if rf.contextLostLocked(Candidate,rf.currentTerm){
-	// 	LOG(rf.me,rf.currentTerm,DVote,"Lost context, abort RequestVoteReply for S%d",peer)
-	// 	return
-	// }
-
 	// 更新对应的matchIndex和nextIndex,且要保证单调
 	if args.LastIncludedIndex > rf.matchIndex[peer] {
 		rf.matchIndex[peer] = args.LastIncludedIndex
