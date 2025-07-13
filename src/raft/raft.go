@@ -19,10 +19,11 @@ package raft
 
 import (
 	//	"bytes"
-
 	"fmt"
 	"log"
+	//"math/rand"
 	"net"
+	//"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,8 +37,8 @@ import (
 
 // 定义最短和最长的超时时间分别为 250ms和400ms
 const (
-	MinElectionTimeout time.Duration = 250 * time.Millisecond
-	MaxElectionTimeout time.Duration = 400 * time.Millisecond
+	MinElectionTimeout time.Duration = 200 * time.Millisecond
+	MaxElectionTimeout time.Duration = 700 * time.Millisecond
 
 	replicateInterval time.Duration = 70 * time.Millisecond
 )
@@ -93,8 +94,8 @@ type Raft struct {
 	currentTerm int  // 当前任期
 	votedFor    int  // 投票给谁
 
-	electionStart time.Time     // 选举开始标志
-	eletionTimout time.Duration // 随机超时时间
+	electionStart  time.Time     // 选举开始标志
+	electionTimout time.Duration // 随机超时时间
 
 	log *RaftLog // 日志
 	// only used when it is Leader,
@@ -110,6 +111,8 @@ type Raft struct {
 	applyCond     *sync.Cond    // 唤醒提交日志索引更新
 	applyCh       chan ApplyMsg //将 applyMsg 通过构造 Peer 时传进来的 channel 返回给应用层，即上层模块（如kv数据库）与当前的raft层的联系
 	snapAppending bool
+
+	//rand *rand.Rand // 每个节点独立的随机生成器
 }
 
 func (rf *Raft) GetPeerLen() int {
@@ -252,6 +255,9 @@ func MakeRaft() *Raft {
 // for any long-running work.
 func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
+	// 生成密码学安全的随机种子
+	//rf.rand = rand.New(rand.NewSource(time.Now().UnixNano() + int64(me)*123456789 + int64(os.Getpid())*987654321))
+	//rf.resetElectionTimerLocked()
 	rf.peers = make([]RaftGrpcClient, len(peerAddrs))
 	rf.conns = make([]*grpc.ClientConn, len(peerAddrs))
 	rf.persister = MakePersister(me)
@@ -306,10 +312,10 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 			continue
 		}
 		fmt.Printf("romote rpc:%s\n", addr)
+		// Dial连接其他节点
 		conn, err := grpc.Dial(
 			addr,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			//grpc.WithBlock(), // 可选：阻塞直到连接建立,如果选择可能会造成阻塞主进程
 		)
 		if err != nil {
 			log.Fatalf("did not connect: %v", err)

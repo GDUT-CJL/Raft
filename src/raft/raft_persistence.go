@@ -62,6 +62,7 @@ func (rf *Raft) readPersist(data []byte) {
 		LOG(rf.me, rf.currentTerm, DPersist, "Read log error:%v", err)
 		return
 	}
+	fmt.Printf("宕机前 Term:%d,votedFor:%d\n", rf.currentTerm, rf.votedFor)
 	// 反序列化快照信息
 	rf.log.snapshot = rf.persister.ReadSnapshot()
 	// 如果快照的索引大于本地的提交日志的索引，则要进行更新

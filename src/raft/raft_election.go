@@ -14,13 +14,21 @@ func (rf *Raft) resetElectionTimerLocked() {
 	// 随机出选举超时的时间断
 	randRange := int64(MaxElectionTimeout - MinElectionTimeout)
 	// 设置超时时间
-	rf.eletionTimout = MinElectionTimeout + time.Duration(rand.Int63()%randRange)
+	rf.electionTimout = MinElectionTimeout + time.Duration(rand.Int63()%randRange)
 }
+
+// func (rf *Raft) resetElectionTimerLocked() {
+// 	diff := int64(MaxElectionTimeout - MinElectionTimeout)
+// 	randNs := rf.rand.Int63n(diff) // 使用节点自己的随机源
+// 	rf.electionTimout = MinElectionTimeout + time.Duration(randNs)
+// 	rf.electionStart = time.Now()
+// }
 
 // 是否超时
 func (rf *Raft) isElectionTimeOut() bool {
 	// 从记录的rf.electionStart开始到现在的时间，是否大于规定的超时时间，如果是则反会true
-	return time.Since(rf.electionStart) > rf.eletionTimout
+	//fmt.Printf("TimeOut:%v,Now:%v\n", rf.electionTimout, time.Since(rf.electionStart))
+	return time.Since(rf.electionStart) > rf.electionTimout
 }
 
 // example RequestVote RPC arguments structure.
