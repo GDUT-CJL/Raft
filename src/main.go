@@ -1,5 +1,6 @@
 package main
 
+// GOOS=linux GOARCH=amd64 go build -o kvstore main.go
 import (
 	"course/bridge"
 	"course/config"
@@ -57,7 +58,7 @@ func startNode(id, port int, cluster []string) (*Node, error) {
 func main() {
 	// 初始化内存池
 	bridge.InitMemPool()
-	// 初始化存储
+	// 初始化存储引擎
 	bridge.InitStorage()
 	path := flag.String("path", "config/config.json", "config path")
 	flag.Parse()
@@ -81,16 +82,25 @@ func main() {
 		}
 		nodes[i] = node
 	}
-	// 测试：等待10秒后让Leader节点宕机
+	// 测试：等待10秒后让Leader节点宕机，然后10s后又重启
 	// go func() {
 	// 	time.Sleep(20 * time.Second)
+	// 	var leaderNode *Node
 	// 	for _, node := range nodes {
-	// 		_,isleader := node.kvServer.GetRaft().GetState()
-	// 		if isleader{
-	// 			fmt.Printf("\n[TEST] Killing Leader (Node on port %d)...\n", node.port)
-	// 			node.kvServer.Kill() // 关闭Leader节点
+	// 		_, isLeader := node.kvServer.GetRaft().GetState()
+	// 		if isLeader {
+	// 			leaderNode = node
 	// 			break
 	// 		}
+	// 	}
+	// 	if leaderNode != nil {
+	// 		fmt.Printf("\n[TEST] Killing Leader (Node on port %d)...\n", leaderNode.port)
+	// 		leaderNode.kvServer.Kill() // 关闭Leader节点
+
+	// 		// 等待10秒后恢复节点
+	// 		time.Sleep(10 * time.Second)
+	// 		fmt.Printf("\n[TEST] Restarting Node (port %d)...\n", leaderNode.port)
+	// 		leaderNode.kvServer.Restart()
 	// 	}
 	// }()
 

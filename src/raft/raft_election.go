@@ -60,6 +60,10 @@ func (rf *Raft) isMoreUpToDateLocked(candidateIndex, candidateTerm int) bool {
 // RPC的回调函数，在sendRequestVote中会回调此函数
 // args代表想要成为leader的那个节点，reply代表我的回应（即我是否会给他投票）
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	if rf.killed() {
+		reply.VoteGranted = false
+		return
+	}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	// Your code here (PartA, PartB).
@@ -134,6 +138,9 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // 启动选举go程函数
 func (rf *Raft) startElection(term int) {
 	//fmt.Printf("节点 %d 开始选举，当前peers数量: %d\n", rf.me, len(rf.peers))
+	if rf.killed() {
+		return
+	}
 	vote := 0
 	askVoteFromPeer := func(peer int, args *RequestVoteArgs) {
 		reply := &RequestVoteReply{}

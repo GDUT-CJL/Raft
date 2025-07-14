@@ -64,11 +64,6 @@ type ApplyMsg struct {
 	Command      []interface{}
 	CommandIndex int
 
-	// 用于批量提交的字段
-	IsBatch       bool
-	BatchStartIdx int
-	BatchSize     int
-
 	// For PartD:
 	SnapshotValid bool
 	Snapshot      []byte
@@ -231,6 +226,20 @@ func (rf *Raft) Kill() {
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
+}
+
+// 节点恢复方法
+func (rf *Raft) Restart() {
+	atomic.StoreInt32(&rf.dead, 0) // 重置死亡标志，0表示启动
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// 重置为Follower状态
+	// rf.role = Leader
+	// rf.votedFor = -1
+	rf.resetElectionTimerLocked() // 重置选举计时器
+
+	LOG(rf.me, rf.currentTerm, DDebug, "Node restarted")
 }
 
 // 状态一致性是实现高可用性和准确性的基础，只有在正确的一致性检查的条件下才可以继续执行代码

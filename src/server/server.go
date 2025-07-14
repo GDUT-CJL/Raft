@@ -21,6 +21,11 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
+// 在server包中的server.go添加
+func (kv *KVServer) Restart() {
+	kv.rf.Restart() // 调用底层的Raft恢复方法
+}
+
 type KVServer struct {
 	mu      sync.Mutex
 	me      int
