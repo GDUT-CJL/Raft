@@ -159,7 +159,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 // 启动选举go程函数
 func (rf *Raft) startElection(term int) {
-	//fmt.Printf("节点 %d 开始选举，当前peers数量: %d\n", rf.me, len(rf.peers))
+	fmt.Printf("节点 %d 开始选举，当前peers数量: %d\n", rf.me, len(rf.peers))
 	vote := 0
 	askVoteFromPeer := func(peer int, args *RequestVoteArgs) {
 		reply := &RequestVoteReply{}
@@ -224,7 +224,7 @@ func (rf *Raft) startElection(term int) {
 func (rf *Raft) electionticker() {
 	// 循环
 	for !rf.killed() {
-
+		time.Sleep(1000 * time.Millisecond) // 更频繁的检查
 		// Your code here (PartA)
 		// Check if a leader election should be started.
 		rf.mu.Lock()
@@ -235,7 +235,7 @@ func (rf *Raft) electionticker() {
 		rf.mu.Unlock()
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
+		ms := 100 + (rand.Int63() % 400)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }

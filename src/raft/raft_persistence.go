@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"course/labgob"
 	"fmt"
+	"time"
 )
 
 func (rf *Raft) PersistStates() string {
@@ -62,7 +63,7 @@ func (rf *Raft) readPersist(data []byte) {
 		LOG(rf.me, rf.currentTerm, DPersist, "Read log error:%v", err)
 		return
 	}
-	fmt.Printf("宕机前 Term:%d,votedFor:%d\n", rf.currentTerm, rf.votedFor)
+	fmt.Printf("宕机前 Term:%d,votedFor:%d,role:%v\n", rf.currentTerm, rf.votedFor, rf.role)
 	// 反序列化快照信息
 	rf.log.snapshot = rf.persister.ReadSnapshot()
 	// 如果快照的索引大于本地的提交日志的索引，则要进行更新
@@ -77,5 +78,12 @@ func (rf *Raft) readPersist(data []byte) {
 			rf.lastApplied = rf.log.snapLastIdx
 		}
 	}
+	// if rf.votedFor == rf.me {
+	// 	fmt.Println("Rejecting stale Leader status after restart")
+	// 	rf.becomeFollowerLocked(rf.currentTerm + 1) // 主动降级
+	// }
+	//rf.electionTimout = MaxElectionTimeout // 强制让重新恢复的节点的超时时间增大
+	rf.electionStart = time.Now()
+	rf.resetElectionTimerLocked()
 	LOG(rf.me, rf.currentTerm, DPersist, "Read Persist %v", rf.PersistStates())
 }

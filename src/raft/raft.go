@@ -21,7 +21,7 @@ import (
 	//	"bytes"
 	"fmt"
 	"log"
-	//"math/rand"
+	"math/rand"
 	"net"
 	//"os"
 	"sync"
@@ -37,10 +37,10 @@ import (
 
 // 定义最短和最长的超时时间分别为 250ms和400ms
 const (
-	MinElectionTimeout time.Duration = 200 * time.Millisecond
-	MaxElectionTimeout time.Duration = 700 * time.Millisecond
+	MinElectionTimeout time.Duration = 300 * time.Millisecond
+	MaxElectionTimeout time.Duration = 1000 * time.Millisecond
 
-	replicateInterval time.Duration = 70 * time.Millisecond
+	replicateInterval time.Duration = 30 * time.Millisecond
 )
 
 const (
@@ -112,7 +112,7 @@ type Raft struct {
 	applyCh       chan ApplyMsg //将 applyMsg 通过构造 Peer 时传进来的 channel 返回给应用层，即上层模块（如kv数据库）与当前的raft层的联系
 	snapAppending bool
 
-	//rand *rand.Rand // 每个节点独立的随机生成器
+	rand *rand.Rand // 每个节点独立的随机生成器
 }
 
 func (rf *Raft) GetPeerLen() int {
@@ -138,6 +138,7 @@ func (rf *Raft) becomeFollowerLocked(term int) {
 	if shouldPersist {
 		rf.persistLocked()
 	}
+	rf.resetElectionTimerLocked()
 }
 
 // 将调用此函数的节点转换状态成为candidate
@@ -150,9 +151,13 @@ func (rf *Raft) becomeCandidateLocked() {
 	LOG(rf.me, rf.currentTerm, DVote, "%s->Candidate,For T%d", rf.role, rf.currentTerm+1)
 	// 成为candidate，任期自增1，投票给自己
 	rf.currentTerm++
+	// if rf.role == Follower {
+	// 	rf.currentTerm++
+	// }
 	rf.role = Candidate
 	rf.votedFor = rf.me
 	rf.persistLocked()
+	rf.resetElectionTimerLocked() // 重置选举超时时间
 }
 
 // 将调用此函数的节点转换状态成为leader
@@ -258,6 +263,8 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 	// 生成密码学安全的随机种子
 	//rf.rand = rand.New(rand.NewSource(time.Now().UnixNano() + int64(me)*123456789 + int64(os.Getpid())*987654321))
 	//rf.resetElectionTimerLocked()
+	//seed := time.Now().UnixNano() + int64(me)*1e9 + int64(os.Getpid())*1e6
+	//rf.rand = rand.New(rand.NewSource(seed))
 	rf.peers = make([]RaftGrpcClient, len(peerAddrs))
 	rf.conns = make([]*grpc.ClientConn, len(peerAddrs))
 	rf.persister = MakePersister(me)
@@ -281,6 +288,10 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 	rf.snapAppending = false
 	// initialize from state persisted before a crash
 	rf.readPersist(rf.persister.ReadRaftState())
+	// rf.mu.Lock()
+	// rf.resetElectionTimerLocked() // 确保恢复节点有完整超时期
+	// rf.mu.Unlock()
+
 	go func() {
 		// 监听自己对应的ip和端口
 		lis, err := net.Listen("tcp", peerAddrs[me]) // 使用配置的地址
@@ -325,6 +336,10 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 		rf.peers[i] = NewRaftGrpcClient(conn)
 	}
 	// start ticker goroutine to start elections
+	// if rf.votedFor == -1 {
+	// 	fmt.Println("rf.votedFor == -1")
+	// 	go rf.electionticker() // 每创建一个raft就可以一直循环触发选举操作
+	// }
 	go rf.electionticker() // 每创建一个raft就可以一直循环触发选举操作
 	go rf.applyTicker()    // 每创建一个raft就启动日志复制的操作，在里面有cond等待唤醒
 
