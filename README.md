@@ -1,6 +1,6 @@
-# RaftKV - A Simple Distributed Key-Value Store(For Learning)
+# RaftKV - A Distributed Key-Value Store
 
-**A learning project** implementing a distributed key-value database with:
+**A C+GO+GRPC project** implementing a distributed key-value database with:
 - **Storage Engine**: Implemented in C (high performance)
 - **Consensus Algorithm**: Raft implemented in Go (for distributed coordination)
 

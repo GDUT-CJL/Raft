@@ -184,22 +184,6 @@ func (rf *Raft) startReplication(term int) bool {
 			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Context Lost, T%d:Leader->T%d:%s", peer, term, rf.currentTerm, rf.role)
 			return
 		}
-
-		// 如果回复失败，说明日志号不对，需要再向前一个任期进行检查
-		// if !reply.Success{
-		// 	// 记录一下当前最后一个日志号
-		// 	idx := rf.nextIndex[peer] - 1
-		// 	// 记录一下当前的最后一个任期号
-		// 	term := rf.log[idx].Term
-		// 	for idx > 0 && rf.log[idx].Term == term{
-		// 		idx-- //日志号减1
-		// 	}
-		// 	// 将下一个日志号改为idx + 1，说明减少了一个任期准备下次再次进行对比
-		// 	rf.nextIndex[peer] = idx + 1
-		// 	LOG(rf.me,rf.currentTerm,DLog,"Log not matched in %d,Update next = %d",args.PrevLogIndex,rf.nextIndex[peer])
-		// 	return
-		// }
-
 		// 如果回复失败，说明日志号不对，需要进行检查
 		if !reply.Success {
 			prevIndex := rf.nextIndex[peer]

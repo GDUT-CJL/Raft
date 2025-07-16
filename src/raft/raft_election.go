@@ -159,7 +159,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 // 启动选举go程函数
 func (rf *Raft) startElection(term int) {
-	fmt.Printf("节点 %d 开始选举，当前peers数量: %d\n", rf.me, len(rf.peers))
+	fmt.Printf("节点 %d 开始选举,当前peers数量: %d\n", rf.me, len(rf.peers))
 	vote := 0
 	askVoteFromPeer := func(peer int, args *RequestVoteArgs) {
 		reply := &RequestVoteReply{}
@@ -224,10 +224,15 @@ func (rf *Raft) startElection(term int) {
 func (rf *Raft) electionticker() {
 	// 循环
 	for !rf.killed() {
-		time.Sleep(1000 * time.Millisecond) // 更频繁的检查
-		// Your code here (PartA)
-		// Check if a leader election should be started.
+		time.Sleep(50 * time.Millisecond) // 更频繁检查（50ms）
+
 		rf.mu.Lock()
+		// 重启保护期：前5秒不触发选举
+		if time.Since(rf.restartTime) < 5*time.Second {
+			rf.resetElectionTimerLocked()
+			rf.mu.Unlock()
+			continue
+		}
 		if rf.role != Leader && rf.isElectionTimeOut() { //如果当前节点不是leader并且选举已经超时
 			rf.becomeCandidateLocked()          // 变为candidate状态
 			go rf.startElection(rf.currentTerm) // 启动选举go程,任期为当前节点任期

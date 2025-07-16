@@ -18,10 +18,8 @@ package raft
 //
 
 import (
-	//	"bytes"
 	"fmt"
 	"log"
-	"math/rand"
 	"net"
 	//"os"
 	"sync"
@@ -37,8 +35,8 @@ import (
 
 // 定义最短和最长的超时时间分别为 250ms和400ms
 const (
-	MinElectionTimeout time.Duration = 300 * time.Millisecond
-	MaxElectionTimeout time.Duration = 1000 * time.Millisecond
+	MinElectionTimeout time.Duration = 500 * time.Millisecond
+	MaxElectionTimeout time.Duration = 1500 * time.Millisecond
 
 	replicateInterval time.Duration = 30 * time.Millisecond
 )
@@ -112,7 +110,9 @@ type Raft struct {
 	applyCh       chan ApplyMsg //将 applyMsg 通过构造 Peer 时传进来的 channel 返回给应用层，即上层模块（如kv数据库）与当前的raft层的联系
 	snapAppending bool
 
-	rand *rand.Rand // 每个节点独立的随机生成器
+	//restartProtected bool       // 重启保护标志
+	restartTime time.Time // 重启时间
+
 }
 
 func (rf *Raft) GetPeerLen() int {
@@ -173,6 +173,8 @@ func (rf *Raft) becomeLeaderLocked() {
 		rf.nextIndex[peer] = rf.log.size() // 初始化为日志长度，有效索引其实是 0 - (len -1),所以下一个是len
 		rf.matchIndex[peer] = 0            //先初始化为0
 	}
+	// 启动独立的心跳协程
+	go rf.heartbeatTicker(rf.currentTerm)
 }
 
 // return currentTerm and whether this server
@@ -260,11 +262,7 @@ func MakeRaft() *Raft {
 // for any long-running work.
 func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
-	// 生成密码学安全的随机种子
-	//rf.rand = rand.New(rand.NewSource(time.Now().UnixNano() + int64(me)*123456789 + int64(os.Getpid())*987654321))
-	//rf.resetElectionTimerLocked()
-	//seed := time.Now().UnixNano() + int64(me)*1e9 + int64(os.Getpid())*1e6
-	//rf.rand = rand.New(rand.NewSource(seed))
+
 	rf.peers = make([]RaftGrpcClient, len(peerAddrs))
 	rf.conns = make([]*grpc.ClientConn, len(peerAddrs))
 	rf.persister = MakePersister(me)
