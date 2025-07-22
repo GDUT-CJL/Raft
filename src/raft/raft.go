@@ -286,13 +286,9 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 	rf.snapAppending = false
 	// initialize from state persisted before a crash
 	rf.readPersist(rf.persister.ReadRaftState())
-	// rf.mu.Lock()
-	// rf.resetElectionTimerLocked() // 确保恢复节点有完整超时期
-	// rf.mu.Unlock()
-
 	go func() {
 		// 监听自己对应的ip和端口
-		lis, err := net.Listen("tcp", peerAddrs[me]) // 使用配置的地址
+		lis, err := net.Listen("tcp", "0.0.0.0:8001")
 		if err != nil {
 			fmt.Println("failed here")
 			log.Fatalf("failed to listen: %v", err)
@@ -333,11 +329,7 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 		rf.conns[i] = conn
 		rf.peers[i] = NewRaftGrpcClient(conn)
 	}
-	// start ticker goroutine to start elections
-	// if rf.votedFor == -1 {
-	// 	fmt.Println("rf.votedFor == -1")
-	// 	go rf.electionticker() // 每创建一个raft就可以一直循环触发选举操作
-	// }
+
 	go rf.electionticker() // 每创建一个raft就可以一直循环触发选举操作
 	go rf.applyTicker()    // 每创建一个raft就启动日志复制的操作，在里面有cond等待唤醒
 

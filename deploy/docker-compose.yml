@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  node0:
+    image: crpi-cp7w9uw5oadlnxc8.cn-guangzhou.personal.cr.aliyuncs.com/gdut-cjl/kvstore:1.0
+    environment:
+      - NODE_ID=0
+      - CLUSTER_CONFIG=${CONFIG_CONTENT}
+    configs:
+      - source: cluster_config_v1
+        target: /cluster_config.json
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - raft_net
+    ports:
+      - "8000:8000"  # 客户端端口
+
+  node1:
+    image: crpi-cp7w9uw5oadlnxc8.cn-guangzhou.personal.cr.aliyuncs.com/gdut-cjl/kvstore:1.0
+    environment:
+      - NODE_ID=1
+      - CLUSTER_CONFIG=${CONFIG_CONTENT}
+    configs:
+      - source: cluster_config_v1
+        target: /cluster_config.json
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == worker]
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - raft_net
+    ports:
+      - "8010:8000"  # 客户端端口
+
+  node2:
+    image: crpi-cp7w9uw5oadlnxc8.cn-guangzhou.personal.cr.aliyuncs.com/gdut-cjl/kvstore:1.0
+    environment:
+      - NODE_ID=2
+      - CLUSTER_CONFIG=${CONFIG_CONTENT}
+    configs:
+      - source: cluster_config_v1
+        target: /cluster_config.json
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == worker]
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - raft_net
+    ports:
+      - "8020:8000"  # 客户端端口
+    
+configs:
+  cluster_config_v1:
+    external: true
+
+networks:
+  raft_net:
+    driver: overlay
+    attachable: true

@@ -36,8 +36,9 @@ func startNode(cfg config.NodeConfig, clusterConfigs []config.NodeConfig, nodeId
 	var kv *server.KVServer
 	if cfg.ID == nodeId {
 		fmt.Printf("nodeId :%d,cfg.ID = %d\n", nodeId, cfg.ID)
+		// 启动rpc服务
 		kv = server.StartKVServer(rpcAddrs, cfg.ID, -1)
-
+		// 启动客户端监听服务
 		go mnet.StartTCPServer(kv, cfg.ClientAddr, cfg.ID)
 	}
 	// 启动TCP服务器处理客户端请求
