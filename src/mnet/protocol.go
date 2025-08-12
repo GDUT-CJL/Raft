@@ -7,7 +7,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net"
-	"os"
+	//"os"
+	"bufio"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -51,6 +52,7 @@ func Commited(kv *server.KVServer, conn net.Conn, parts []string, rf *raft.Raft,
 			kv.Unlock()
 		}()
 	} else {
+		// TODO：返回leader节点的IP，方便客户端重试
 		conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
 	}
 }
@@ -58,20 +60,21 @@ func Commited(kv *server.KVServer, conn net.Conn, parts []string, rf *raft.Raft,
 // handleConnection 处理TCP连接的请求
 func handleConnection(kv *server.KVServer, conn net.Conn) {
 	defer func() {
-		fmt.Printf("Closing connection from %s\n", conn.RemoteAddr())
+		//fmt.Printf("Closing connection from %s\n", conn.RemoteAddr())
 		conn.Close()
 	}()
 
-	buffer := make([]byte, 1024)
+	// 使用 bufio.Scanner 按行读取，支持 \r\n
+	scanner := bufio.NewScanner(conn)
+	scanner.Split(bufio.ScanLines) // 默认支持 \r\n 和 \n
 	// 持续读取客户端的请求
-	for {
-		n, err := conn.Read(buffer)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading from connection: %s\n", err)
-			return
+	for scanner.Scan() {
+		command := scanner.Text()
+		command = strings.TrimSpace(command)
+		if command == "" {
+			continue
 		}
-		command := string(buffer[:n])
-		command = strings.TrimSpace(command) // 去掉首尾空白
+		fmt.Printf("command:%s\n", command)
 		rf := kv.GetRaft()
 		// 解析命令
 		parts := strings.Split(command, " ")
