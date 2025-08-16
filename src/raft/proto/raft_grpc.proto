@@ -37,6 +37,7 @@ message G_AppendEntriesArgs{
  	int64 PrevLogTerm = 4;
   	repeated G_LogEntry Entries = 5;  // 使用 repeated 表示数组
   	int64 LeaderCommit = 6;
+	string LeaderIP = 7;
 }
 message G_AppendEntriesReply{
 	int64 Term = 1;
