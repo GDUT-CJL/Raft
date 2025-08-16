@@ -110,6 +110,7 @@ type Raft struct {
 	applyCh       chan ApplyMsg //将 applyMsg 通过构造 Peer 时传进来的 channel 返回给应用层，即上层模块（如kv数据库）与当前的raft层的联系
 	snapAppending bool
 
+	LeaderIP string
 	//restartProtected bool       // 重启保护标志
 	restartTime time.Time // 重启时间
 
