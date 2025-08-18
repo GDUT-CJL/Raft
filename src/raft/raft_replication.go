@@ -24,6 +24,7 @@ type AppendEntriesArgs struct {
 	Entries      []LogEntry //具体的日志信息
 
 	LeaderCommit int // leader已提交的日志号
+	LeaderIP     string
 }
 
 type AppendEntriesReply struct {
@@ -82,6 +83,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d,Reject log,Pre Log not match,[%d]: T%d != T%d", args.LeaderId, args.PrevLogTerm, rf.log.at(args.PrevLogIndex).Term)
 		return
 	}
+	// 记录leaderIP
+	rf.LeaderIP = args.LeaderIP
 
 	// 追加日志
 	rf.log.appendFrom(args.PrevLogIndex, args.Entries)
@@ -135,6 +138,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		PrevLogTerm:  int64(args.PrevLogTerm),
 		Entries:      convertToGrpcLogEntries(args.Entries),
 		LeaderCommit: int64(args.LeaderCommit),
+		LeaderIP:     string(args.LeaderIP),
 	}
 
 	// 设置超时上下文
@@ -262,6 +266,7 @@ func (rf *Raft) startReplication(term int) bool {
 			PrevLogTerm:  prevTerm,
 			Entries:      rf.log.tail(prevIndex + 1), // 从 rf.log 切片中截取从索引 prevIndex+1 开始到末尾的所有日志条目。左闭右开
 			LeaderCommit: rf.commitIndex,
+			LeaderIP:     rf.LeaderIP,
 		}
 		go replicateToPeer(peer, args)
 	}

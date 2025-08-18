@@ -4,8 +4,27 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"net"
 	"time"
 )
+
+func getLocalIP() (string, error) {
+	// 获取所有网络接口
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", err
+	}
+	for _, addr := range addrs {
+		// 检查是否为 IP 地址
+		if ipnet, ok := addr.(*net.IPNet); ok {
+			// 排除回环地址（如 127.0.0.1）和 IPv6 地址（可选）
+			if !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+				return ipnet.IP.String() + ":8000", nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no local IP address found")
+}
 
 // 重置选举超时的时间
 func (rf *Raft) resetElectionTimerLocked() {
@@ -189,7 +208,13 @@ func (rf *Raft) startElection(term int) {
 			vote++                      // 则票数自增1
 			if vote > len(rf.peers)/2 { //如果我的票数大于一半以上的同意票
 				rf.becomeLeaderLocked() // 那么我成为leader
-				fmt.Printf(" Node %d become leader\n", rf.me)
+				ip, err := getLocalIP()
+				if err != nil {
+					fmt.Println("Error:", err)
+					return
+				}
+				rf.LeaderIP = ip
+				fmt.Printf(" Node %d become leader IP:%s\n", rf.me, rf.LeaderIP)
 				// 发起心跳和日志同步，通知其他成员我已经是leader并开始复制我的日志
 				go rf.replicationTicker(term)
 			}

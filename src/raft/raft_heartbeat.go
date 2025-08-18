@@ -34,6 +34,7 @@ func (rf *Raft) sendHeartbeat(server int, term int) {
 		PrevLogTerm:  prevTerm,
 		Entries:      nil, // 空条目表示心跳
 		LeaderCommit: rf.commitIndex,
+		LeaderIP:     rf.LeaderIP,
 	}
 	rf.mu.Unlock()
 

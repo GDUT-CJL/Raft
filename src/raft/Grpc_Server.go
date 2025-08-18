@@ -60,6 +60,7 @@ func (s *RaftServer) Grpc_AppendEntries(ctx context.Context, req *G_AppendEntrie
 		Entries:      convertFromGrpcLogEntries(req.Entries),
 
 		LeaderCommit: int(req.LeaderCommit),
+		LeaderIP:     string(req.LeaderIP),
 	}
 	reply := &AppendEntriesReply{}
 	s.raftNode.AppendEntries(args, reply)

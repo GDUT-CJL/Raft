@@ -53,7 +53,7 @@ func Commited(kv *server.KVServer, conn net.Conn, parts []string, rf *raft.Raft,
 		}()
 	} else {
 		// TODO：返回leader节点的IP，方便客户端重试
-		conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
+		conn.Write([]byte("ErrorNotLeader" + rf.LeaderIP + "\n")) // 不是leader节点不允许操作，强一致性
 	}
 }
 
@@ -119,9 +119,9 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				SeqId:    time.Now().UnixNano(),
 			}
 			if _, _, isLeader := rf.Start(op); !isLeader {
-				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
+				conn.Write([]byte("ErrorNotLeader" + rf.LeaderIP + "\n")) // 不是leader节点不允许操作，强一致性
 			} else {
-				count := bridge.Array_Count() / rf.GetPeerLen()
+				count := bridge.Array_Count()
 				// int 转为 string
 				s := strconv.Itoa(count)
 				conn.Write([]byte(s + "\n"))
@@ -183,7 +183,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				SeqId:    time.Now().UnixNano(),
 			}
 			if _, _, isLeader := rf.Start(op); !isLeader {
-				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
+				conn.Write([]byte("ErrorNotLeader" + rf.LeaderIP + "\n")) // 不是leader节点不允许操作，强一致性
 			} else {
 				count := bridge.Hash_Count()
 				// int 转为 string
@@ -236,7 +236,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				SeqId:    time.Now().UnixNano(),
 			}
 			if _, _, isLeader := rf.Start(op); !isLeader {
-				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
+				conn.Write([]byte("ErrorNotLeader" + rf.LeaderIP + "\n")) // 不是leader节点不允许操作，强一致性
 			} else {
 				count := bridge.RB_Count() / rf.GetPeerLen()
 				// int 转为 string
@@ -289,7 +289,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				SeqId:    time.Now().UnixNano(),
 			}
 			if _, _, isLeader := rf.Start(op); !isLeader {
-				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
+				conn.Write([]byte("ErrorNotLeader" + rf.LeaderIP + "\n")) // 不是leader节点不允许操作，强一致性
 			} else {
 				count := bridge.BTree_Count()
 				// int 转为 string
@@ -343,7 +343,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				SeqId:    time.Now().UnixNano(),
 			}
 			if _, _, isLeader := rf.Start(op); !isLeader {
-				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
+				conn.Write([]byte("ErrorNotLeader" + rf.LeaderIP + "\n")) // 不是leader节点不允许操作，强一致性
 			} else {
 				count := bridge.Skiplist_Count()
 				// int 转为 string

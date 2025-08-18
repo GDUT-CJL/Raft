@@ -71,6 +71,7 @@ func Array_Delete(key string) string {
 	defer C.kvs_free(unsafe.Pointer(cKey)) // 释放 C 字符串
 	cRet := C.delete(cKey)
 	if cRet == 0 {
+		atomic.AddInt64(&arrayCounter, -1)
 		return "OK"
 	}
 	return "FALIED"
@@ -171,6 +172,7 @@ func RB_Delete(key string) string {
 
 	cRet := C.rdelete(cKey)
 	if cRet == 0 {
+		atomic.AddInt64(&rbCounter, -1)
 		return "OK"
 	}
 	return "FAILED"
@@ -264,6 +266,7 @@ func Skiplist_Delete(key string) string {
 
 	cRet := C.zdelete(cKey)
 	if cRet == 0 {
+		atomic.AddInt64(&skCounter, -1)
 		return "OK"
 	}
 	return "FAILED"
