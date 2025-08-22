@@ -11,6 +11,9 @@ extern "C" {
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <unistd.h>
+
+#include "rocksdb/c.h" // for rockdb
 #define MAX_MSGBUFFER_LENGTH	1024
 #define MAX_ARRAY_NUMS	102400
 
@@ -142,6 +145,36 @@ int zdelete(char* key);
 int zcount();
 int zexist(char* key);
 
+/*------------------------------ rockdb --------------------------------------*/
+#pragma once
+#define PATH_TO_ROCKSDB "./rocksdb_data"
+#define PATH_TO_ROCKSDB_BACKUP "./rocksdb_backup"
+struct rocks_obj {
+    rocksdb_t *db;
+    rocksdb_backup_engine_t* be;
+    rocksdb_options_t *options;
+    rocksdb_writeoptions_t *writeoptions;
+    rocksdb_readoptions_t *readoptions;
+    rocksdb_restore_options_t *restore_options;
+};
+
+struct rocks_obj* rocksdb_obj;
+// 初始化 RocksDB
+int init_rocksdb();
+// 关闭并清理 RocksDB 资源
+void close_Rocksdb();
+// 设置键值对
+int rc_set(const char* key, const char* value);
+// 获取键值对
+char* rc_get(const char* key);
+// 删除键值对
+int rc_delete(const char* key);
+// 创建备份
+int kvs_rocksdb_create_backup() ;
+// 批量写入接口
+int kvs_rocksdb_batch_set(const char** keys, const char** values, int count);
+
+
 /*------------------------------ mempool --------------------------------------*/
 #include <stdint.h>
 
@@ -195,6 +228,7 @@ void* jl_alloc(struct jl_pool_s* pool,int size);
 void* jl_calloc(jl_pool_t* pool,int size);
 void jl_free(jl_pool_t* pool,void* p);
 int jl_flush_to_disk(jl_pool_t* pool, const char* filename);
+
 
 #ifdef __cplusplus  
 }  

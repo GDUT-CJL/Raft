@@ -28,12 +28,12 @@ public:
     ssize_t Jl_RecvMsg();
 
     // 获取最后接收到的消息
-    const char* Jl_GetResponse();
+    char* Jl_GetResponse();
 
     // 关闭连接并释放资源
     void Jl_Close();
 private:
-    bool is_leader_command(string command);
+    bool is_leader_command(string& command);
     int parse_leader_info(string command);
     int reconnect_to_leader();
 private:

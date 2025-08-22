@@ -9,7 +9,7 @@ JlClient::~JlClient()
     Jl_Close();
 }
 
-static bool is_leader_command(const string& command) {
+bool JlClient::is_leader_command(string& command) {
     if (command.empty()) return false;
 
     const array<std::string, 3> leader_commands = {"set", "delete", "count"};
@@ -165,7 +165,7 @@ int JlClient::Jl_ConnectServer()
     }
     
     m_connfd = connfd;
-    printf("Connected to %s:%d\n", cur_ip, cur_port);
+    printf("Connected to %s:%d\n", cur_ip.c_str(), cur_port);
     return 0;
     
 }
@@ -271,7 +271,7 @@ ssize_t JlClient::Jl_RecvMsg()
 }
 
 // 获取最后接收到的消息
-const char* JlClient::Jl_GetResponse()
+char* JlClient::Jl_GetResponse()
 {
     return recv_msg != nullptr ? recv_msg : nullptr;
 }

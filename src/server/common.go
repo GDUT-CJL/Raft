@@ -22,6 +22,10 @@ const (
 	ZSet
 	ZDelete
 	ZCount
+
+	RCSet
+	RCGet
+	RCDelete
 )
 
 type OpReply struct {
@@ -38,12 +42,11 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Key      string
-	Value    string
-	OpType   OperationType
+	Key    string
+	Value  string
+	OpType OperationType
 	// 每次请求都会生成ClientId和SeqId
 	// ClientId和SeqId确定唯一的一次请求避免重复请求
 	ClientId int64
 	SeqId    int64
 }
-

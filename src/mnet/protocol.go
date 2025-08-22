@@ -350,6 +350,29 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				s := strconv.Itoa(count)
 				conn.Write([]byte(s + "\n"))
 			}
+		case "RCSET":
+			if len(parts) != 3 {
+				conn.Write([]byte("Invalid RCSET command\n"))
+				continue
+			}
+			Commited(kv, conn, parts, rf, server.RCSet, parts[1], parts[2])
+		case "RCGET":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid RCGET command\n"))
+				continue
+			}
+			value := bridge.RC_Get(parts[1])
+			if len(value) != 0 {
+				conn.Write([]byte(value + "\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		case "RCDELETE":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid RCDelete command\n"))
+				continue
+			}
+			Commited(kv, conn, parts, rf, server.RCDelete, parts[1], parts[1])
 		// 返回该节点是不是leader
 		case "LEADER":
 			currentTerm, isLeader := rf.GetState()

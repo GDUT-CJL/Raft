@@ -34,6 +34,7 @@ func InitStorage() {
 	C.init_hashtable()
 	C.init_rbtree()
 	C.init_skipTable()
+	C.init_rocksdb()
 }
 
 func DestoryStorage() {
@@ -282,4 +283,35 @@ func Skiplist_Exist(key string) int {
 	defer C.kvs_free(unsafe.Pointer(cKey)) // 释放 C 字符串
 	ret := C.zexist(cKey)
 	return int(ret)
+}
+
+// ---------------------------- Rocksdb ------------------------------------- //
+func RC_Set(key, value string) string {
+	cKey := C.CString(key)
+	cValue := C.CString(value)
+	defer C.kvs_free(unsafe.Pointer(cKey))
+	defer C.kvs_free(unsafe.Pointer(cValue))
+	ret := C.rc_set(cKey, cValue)
+	if ret == 0 {
+		return "OK"
+	}
+	return "FALIED"
+}
+
+func RC_Get(key string) string {
+	cKey := C.CString(key)
+	defer C.kvs_free(unsafe.Pointer(cKey))
+	cValue := C.rc_get(cKey)
+	return C.GoString(cValue)
+}
+
+func RC_Delete(key string) string {
+	cKey := C.CString(key)
+	defer C.kvs_free(unsafe.Pointer(cKey))
+
+	cRet := C.rc_delete(cKey)
+	if cRet == 0 {
+		return "OK"
+	}
+	return "FAILED"
 }
