@@ -69,7 +69,7 @@ int init_rocksdb() {
     
     // 设置写入选项
     rocksdb_writeoptions_set_sync(writeoptions, 0); // 异步写入以提高性能
-    rocksdb_writeoptions_disable_WAL(writeoptions, 1);//禁用WAL预习机制，为了测性能，不推荐禁用
+    //rocksdb_writeoptions_disable_WAL(writeoptions, 1);//禁用WAL预习机制，为了测性能，不推荐禁用
     
     // 填充结构体
     rocksdb_obj->db = db;

@@ -1,7 +1,7 @@
 package main
 
 // GOOS=linux GOARCH=amd64 go build -o kvstore main.go
-// GOOS=linux GOARCH=amd64 go build -o kvstore main.go -ldflags="-lrocksdb"
+// CGO_LDFLAGS="-lrocksdb" GOOS=linux GOARCH=amd64 go build -o kvstore main.go
 import (
 	"flag"
 	"fmt"

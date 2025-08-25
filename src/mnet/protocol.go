@@ -74,7 +74,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 		if command == "" {
 			continue
 		}
-		fmt.Printf("command:%s\n", command)
+		// fmt.Printf("command:%s\n", command)
 		rf := kv.GetRaft()
 		// 解析命令
 		parts := strings.Split(command, " ")
