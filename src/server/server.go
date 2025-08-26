@@ -45,10 +45,6 @@ func (kv *KVServer) GetRaft() *raft.Raft {
 	return kv.rf
 }
 
-func (kv *KVServer) GetApplyChannel() <-chan raft.ApplyMsg {
-	return kv.applyCh
-}
-
 func (kv *KVServer) Lock() {
 	kv.mu.Lock()
 }
