@@ -23,6 +23,7 @@ var (
 	rbTreeLock   sync.RWMutex
 	bTreeLock    sync.RWMutex
 	skiplistLock sync.RWMutex
+	rocksdbLock  sync.RWMutex
 )
 
 func InitMemPool() {
@@ -79,7 +80,8 @@ func Array_Delete(key string) string {
 }
 
 func Array_Count() int {
-	return int(atomic.LoadInt64(&arrayCounter))
+	//return int(atomic.LoadInt64(&arrayCounter))
+	return int(C.count())
 }
 
 func Array_Exist(key string) int {
@@ -135,14 +137,12 @@ func Hash_Exist(key string) int {
 var rbCounter int64 // 原子计数器
 
 func RB_Set(key, value string) string {
-	rbTreeLock.RLock()
-	defer rbTreeLock.RUnlock()
 	cKey := C.CString(key)
 	cValue := C.CString(value)
 	defer C.kvs_free(unsafe.Pointer(cKey))
 	defer C.kvs_free(unsafe.Pointer(cValue))
 	if ret := C.rset(cKey, cValue); ret == 0 {
-		atomic.AddInt64(&rbCounter, 1)
+		//atomic.AddInt64(&rbCounter, 1)
 		return "OK"
 	}
 	return "FAILED"
@@ -163,8 +163,8 @@ func RB_Get(key string) string {
 }
 
 func RB_Count() int {
-	return int(atomic.LoadInt64(&rbCounter))
-	//return int(C.rcount())
+	//return int(atomic.LoadInt64(&rbCounter))
+	return int(C.rcount())
 }
 
 func RB_Delete(key string) string {
@@ -173,7 +173,6 @@ func RB_Delete(key string) string {
 
 	cRet := C.rdelete(cKey)
 	if cRet == 0 {
-		atomic.AddInt64(&rbCounter, -1)
 		return "OK"
 	}
 	return "FAILED"
@@ -241,14 +240,11 @@ func BTree_Exist(key string) int {
 var skCounter int64
 
 func Skiplist_Set(key, value string) string {
-	skiplistLock.Lock()
-	defer skiplistLock.Unlock()
 	cKey := C.CString(key)
 	cValue := C.CString(value)
 	defer C.kvs_free(unsafe.Pointer(cKey))
 	defer C.kvs_free(unsafe.Pointer(cValue))
 	if ret := C.zset(cKey, cValue); ret == 0 {
-		atomic.AddInt64(&skCounter, 1)
 		return "OK"
 	}
 	return "FALIED"
@@ -274,8 +270,7 @@ func Skiplist_Delete(key string) string {
 }
 
 func Skiplist_Count() int {
-	//return int(C.zcount())
-	return int(atomic.LoadInt64(&skCounter))
+	return int(C.zcount())
 }
 
 func Skiplist_Exist(key string) int {
@@ -286,6 +281,7 @@ func Skiplist_Exist(key string) int {
 }
 
 // ---------------------------- Rocksdb ------------------------------------- //
+var rocksdbCounter int64 // 原子计数器
 func RC_Set(key, value string) string {
 	cKey := C.CString(key)
 	cValue := C.CString(value)
@@ -314,4 +310,8 @@ func RC_Delete(key string) string {
 		return "OK"
 	}
 	return "FAILED"
+}
+
+func RC_Count() int {
+	return int(atomic.LoadInt64(&rocksdbCounter))
 }

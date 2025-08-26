@@ -24,8 +24,8 @@ const (
 	ZCount
 
 	RCSet
-	RCGet
 	RCDelete
+	RCCount
 )
 
 type OpReply struct {

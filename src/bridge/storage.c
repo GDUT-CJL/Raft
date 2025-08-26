@@ -1,5 +1,4 @@
-// gcc -fPIC -c *.c
-// gcc -shared *.o -o libstorage.so
+// gcc -fPIC -c *.c && gcc -shared *.o -o libstorage.so && rm *.o
 #include "storage.h"
 #define JL_MEMPOOL_SIZE		1 << 12
 int initPool(){

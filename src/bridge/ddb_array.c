@@ -91,33 +91,26 @@ int kvs_array_insert_ttl(char* key,char* value,long long expired_time){
 	}
 	strncpy(kcopy,key,strlen(key)+1);
 	strncpy(vcopy,value,strlen(value)+1);
-
-	//int* time_copy = (int*)kvs_malloc(sizeof(int));
-	//*time_copy = expired_time;
-#if 0
-	// 有问题，不能和delete配合，会发现delete完后count--数据会被覆盖
-	array_table[array_count].key = kcopy;
-	array_table[array_count].value = vcopy;
-	array_count++;
-#endif
 	int i = 0;
 	for(i = 0; i < MAX_ARRAY_NUMS;++i){
 		if(array_table->array[i].key == NULL && array_table->array[i].value == NULL)
 			break;
+		if(strcmp(array_table->array[i].key, kcopy) == 0)
+			break;
+	}
+	if(array_search_item(key) == NULL){
+		array_table->array_count++;
 	}
 	array_table->array[i].key = kcopy;
 	array_table->array[i].value = vcopy;
 	array_table->array[i].expired = expired_time;
-	array_table->array_count++;
 	pthread_mutex_unlock(&array_table->array_mutex);
 	return 0;
 }
-
 // array set 
 int set(char* key,char* value){
 	return kvs_array_insert_ttl(key,value,0);
 }
-
 // array get 
 char* get(const char* key){
 	kvs_array_item_t* get = array_search_item(key);
@@ -177,3 +170,4 @@ int exist(const char* key){
 	}
 	return -1;
 }
+

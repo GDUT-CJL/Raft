@@ -238,7 +238,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 			if _, _, isLeader := rf.Start(op); !isLeader {
 				conn.Write([]byte("ErrorNotLeader" + rf.LeaderIP + "\n")) // 不是leader节点不允许操作，强一致性
 			} else {
-				count := bridge.RB_Count() / rf.GetPeerLen()
+				count := bridge.RB_Count()
 				// int 转为 string
 				s := strconv.Itoa(count)
 				conn.Write([]byte(s + "\n"))
@@ -373,6 +373,26 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				continue
 			}
 			Commited(kv, conn, parts, rf, server.RCDelete, parts[1], parts[1])
+
+		case "RCCOUNT":
+			if len(parts) != 1 {
+				conn.Write([]byte("ERR invalid RCCount command\n"))
+				continue
+			}
+			op := server.Op{
+				OpType:   server.RCCount,
+				Key:      parts[0],
+				ClientId: generateClientID(conn),
+				SeqId:    time.Now().UnixNano(),
+			}
+			if _, _, isLeader := rf.Start(op); !isLeader {
+				conn.Write([]byte("ErrorNotLeader" + rf.LeaderIP + "\n")) // 不是leader节点不允许操作，强一致性
+			} else {
+				count := bridge.RC_Count()
+				// int 转为 string
+				s := strconv.Itoa(count)
+				conn.Write([]byte(s + "\n"))
+			}
 		// 返回该节点是不是leader
 		case "LEADER":
 			currentTerm, isLeader := rf.GetState()

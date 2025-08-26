@@ -187,6 +187,8 @@ func (kv *KVServer) applyToStateMachine(op Op) *OpReply {
 		err = bridge.RC_Set(op.Key, op.Value)
 	case RCDelete:
 		err = bridge.RC_Delete(op.Key)
+	case RCCount:
+		value = bridge.RC_Count()
 	default:
 		fmt.Println("Wrroied Command")
 	}
