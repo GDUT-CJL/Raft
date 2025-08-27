@@ -90,7 +90,7 @@ func (kv *KVServer) applyTask() {
 					continue
 				}
 				kv.lastApplied = message.CommandIndex
-				fmt.Printf("Type of command: %T\n", message.Command)
+				//fmt.Printf("Type of command: %T\n", message.Command)
 
 				// 这行代码使用了类型断言（type assertion），它的主要作用是将 message.Command 转换为 Op 类型
 				var op Op
