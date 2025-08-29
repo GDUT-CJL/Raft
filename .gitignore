@@ -1,6 +1,22 @@
-pkg/
-api.key
-.api.key.trimmed
-*-handin.tar.gz
-# 忽略 src/lib/ 目录下的所有文件
+# 忽略构建产物
 /src/lib/
+/src/bridge/libstorage.so
+/src/client/libjlclient.so
+
+# 忽略测试二进制文件
+/src/client/Test
+/src/client_cpp/test
+
+# 忽略 Go 构建产物
+/main
+/go.sum
+/go.mod
+
+# 忽略备份文件
+**/config.json.bak
+
+# 忽略日志和临时文件
+/logs
+*.log
+*~
+.DS_Store
