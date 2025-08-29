@@ -61,8 +61,10 @@ func sendBatch(kv *server.KVServer, conn net.Conn, batch []server.Op, rf *raft.R
 	select {
 	case <-notifyCh:
 		conn.Write([]byte("BATCH_OK\n"))
+		kv.RemoveNotifyChannel(index) // 立即移除通知通道，避免竞争条件
 	case <-time.After(5 * time.Second):
 		conn.Write([]byte("BATCH_TIMEOUT\n"))
+		kv.RemoveNotifyChannel(index) // 超时后也移除通道
 	}
 
 	// Clean up notification channel
@@ -83,7 +85,7 @@ func flushBatch(kv *server.KVServer, conn net.Conn, rf *raft.Raft) {
 		batchToSend := make([]server.Op, len(batch))
 		copy(batchToSend, batch)
 		batchBufferMap[conn] = nil // 清空而非删除
-		go sendBatch(kv, conn, batchToSend, rf)
+		sendBatch(kv, conn, batchToSend, rf)
 	}
 }
 
@@ -104,7 +106,7 @@ func addToBatch(op server.Op, conn net.Conn, kv *server.KVServer, rf *raft.Raft)
 	if len(batchBufferMap[conn]) >= batchSize {
 		batch := make([]server.Op, len(batchBufferMap[conn]))
 		copy(batch, batchBufferMap[conn])
-		delete(batchBufferMap, conn)
+		batchBufferMap[conn] = nil // 清空缓冲区
 		go sendBatch(kv, conn, batch, rf)
 	}
 }
@@ -137,15 +139,19 @@ func Commited(optype server.OperationType, key string, value string, conn net.Co
 // handleConnection processes TCP connections
 func handleConnection(kv *server.KVServer, conn net.Conn) {
 	rf := kv.GetRaft()
-
+	// 创建退出通道用于超时goroutine
+	quitCh := make(chan struct{})
 	defer func() {
 		fmt.Printf("Closing connection from %s\n", conn.RemoteAddr())
-		// 重试 3 次清空缓冲区
-		// for i := 0; i < 3; i++ {
-		// 	flushBatch(kv, conn, rf)
-		// 	time.Sleep(10 * time.Millisecond)
-		// 	//fmt.Printf("%d\n", i)
-		// }
+		// 重试3次清空缓冲区，确保所有数据都被提交
+		for i := 0; i < 3; i++ {
+			flushBatch(kv, conn, rf)
+			time.Sleep(10 * time.Millisecond)
+		}
+		close(quitCh) // 通知超时goroutine退出
+		batchMutex.Lock()
+		delete(batchBufferMap, conn) // 移除连接对应的缓冲区，避免内存泄漏
+		batchMutex.Unlock()
 		conn.Close()
 	}()
 	reader := bufio.NewReader(conn)
@@ -161,6 +167,8 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 			case <-timer.C:
 				flushBatch(kv, conn, rf)
 				timer.Reset(batchTimeout)
+			case <-quitCh:
+				return // 收到退出信号，结束goroutine
 			}
 		}
 	}()

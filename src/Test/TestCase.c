@@ -7,7 +7,6 @@
 #include <unistd.h>
 #include <sys/time.h>
 /* array有错误，运行通过，send on closed channel 
-    RBTree的count值不对
     skiplist的count值不对
 */
 #define ENABLE_ARRAY_TEST   0
