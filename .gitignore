@@ -2,3 +2,11 @@ pkg/
 api.key
 .api.key.trimmed
 *-handin.tar.gz
+# Ignore the entire lib directory
+/lib/
+
+# Alternatively, if you want to keep the directory but ignore only library files
+# /lib/*.so
+# /lib/*.so.*
+# /lib/*.a
+# /lib/*.dylib
