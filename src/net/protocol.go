@@ -112,7 +112,7 @@ func addToBatch(op server.Op, conn net.Conn, kv *server.KVServer, rf *raft.Raft)
 }
 
 // 日志批量提交操作
-func Commited(optype server.OperationType, key string, value string, conn net.Conn, kv *server.KVServer, rf *raft.Raft) {
+func Commited(optype server.OperationType, key string, value string, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
 	var peer int
 	if _, isLeader := rf.GetState(); !isLeader {
 		for peer = 0; peer < rf.GetPeerLen(); peer++ {
@@ -134,6 +134,11 @@ func Commited(optype server.OperationType, key string, value string, conn net.Co
 	}
 	addToBatch(op, conn, kv, rf)
 	conn.Write([]byte("ACK\n"))
+	// Reset timer on each operation
+	if !timer.Stop() {
+		<-timer.C
+	}
+	timer.Reset(batchTimeout)
 }
 
 // handleConnection processes TCP connections
@@ -203,12 +208,8 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid SET command\n"))
 				continue
 			}
-			Commited(server.Set, parts[1], parts[2], conn, kv, rf)
-			// Reset timer on each operation
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timer.Reset(batchTimeout)
+			Commited(server.Set, parts[1], parts[2], conn, kv, rf, timer)
+
 		case "GET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid GET command\n"))
@@ -238,12 +239,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid DELETE command\n"))
 				continue
 			}
-			Commited(server.Delete, parts[1], parts[1], conn, kv, rf)
-			// Reset timer on each operation
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timer.Reset(batchTimeout)
+			Commited(server.Delete, parts[1], parts[1], conn, kv, rf, timer)
 
 		case "EXIST":
 			if len(parts) != 2 {
@@ -263,12 +259,8 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid HSET command\n"))
 				continue
 			}
-			Commited(server.HSet, parts[1], parts[2], conn, kv, rf)
-			// Reset timer on each operation
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timer.Reset(batchTimeout)
+			Commited(server.HSet, parts[1], parts[2], conn, kv, rf, timer)
+
 		case "HGET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid HGET command\n"))
@@ -297,12 +289,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid HDELETE command\n"))
 				continue
 			}
-			Commited(server.HDelete, parts[1], parts[1], conn, kv, rf)
-			// Reset timer on each operation
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timer.Reset(batchTimeout)
+			Commited(server.HDelete, parts[1], parts[1], conn, kv, rf, timer)
 
 		case "HEXIST":
 			if len(parts) != 2 {
@@ -321,12 +308,8 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid RSET command\n"))
 				continue
 			}
-			Commited(server.RSet, parts[1], parts[2], conn, kv, rf)
-			// Reset timer on each operation
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timer.Reset(batchTimeout)
+			Commited(server.RSet, parts[1], parts[2], conn, kv, rf, timer)
+
 		case "RGET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid RGET command\n"))
@@ -355,12 +338,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid RDELETE command\n"))
 				continue
 			}
-			Commited(server.Delete, parts[1], parts[1], conn, kv, rf)
-			// Reset timer on each operation
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timer.Reset(batchTimeout)
+			Commited(server.Delete, parts[1], parts[1], conn, kv, rf, timer)
 
 		case "REXIST":
 			if len(parts) != 2 {
@@ -380,12 +358,8 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid BSET command\n"))
 				continue
 			}
-			Commited(server.BSet, parts[1], parts[2], conn, kv, rf)
-			// Reset timer on each operation
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timer.Reset(batchTimeout)
+			Commited(server.BSet, parts[1], parts[2], conn, kv, rf, timer)
+
 		case "BGET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid BGET command\n"))
@@ -414,12 +388,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid BDELETE command\n"))
 				continue
 			}
-			Commited(server.BDelete, parts[1], parts[1], conn, kv, rf)
-			// Reset timer on each operation
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timer.Reset(batchTimeout)
+			Commited(server.BDelete, parts[1], parts[1], conn, kv, rf, timer)
 
 		case "BEXIST":
 			if len(parts) != 2 {
@@ -438,12 +407,8 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid ZSET command\n"))
 				continue
 			}
-			Commited(server.ZSet, parts[1], parts[2], conn, kv, rf)
-			// 每次提交后就重置超时时间
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timer.Reset(batchTimeout)
+			Commited(server.ZSet, parts[1], parts[2], conn, kv, rf, timer)
+
 		case "ZGET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid ZGET command\n"))
@@ -473,12 +438,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid ZDELETE command\n"))
 				continue
 			}
-			Commited(server.ZDelete, parts[1], parts[1], conn, kv, rf)
-			// Reset timer on each operation
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timer.Reset(batchTimeout)
+			Commited(server.ZDelete, parts[1], parts[1], conn, kv, rf, timer)
 
 		case "ZEXIST":
 			if len(parts) != 2 {
