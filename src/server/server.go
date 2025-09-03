@@ -37,6 +37,12 @@ type KVServer struct {
 	// 客户端每次发送一个请求在server中都会给随机一个ClentId和SeqId
 	clientSeqTable map[int64]LastOperationInfo // 客户端最后处理的序列号,处理重复请求
 	notifyChans    map[int]chan *OpReply
+
+	Counter int64 // 原子计数器,用于测试
+}
+
+func (kv *KVServer) GetSetCounter() int64 {
+	return atomic.LoadInt64(&kv.Counter)
 }
 
 func (kv *KVServer) GetRaft() *raft.Raft {
@@ -78,6 +84,8 @@ func StartKVServer(servers []string, me int, maxraftstate int) *KVServer {
 	return kv
 }
 
+var mechineLock sync.RWMutex
+
 func (kv *KVServer) applyTask() {
 	for !kv.killed() {
 		select {
@@ -90,51 +98,66 @@ func (kv *KVServer) applyTask() {
 					continue
 				}
 				kv.lastApplied = message.CommandIndex
+				var opReplies []*OpReply
+				var notifyChs []chan *OpReply
 				//fmt.Printf("Type of command: %T\n", message.Command)
-
-				// 这行代码使用了类型断言（type assertion），它的主要作用是将 message.Command 转换为 Op 类型
-				var op Op
-				// 判断实际类型
-				switch cmd := message.Command.(type) {
-				case Op:
-					op = cmd
-				case map[string]interface{}:
-					// 如果是map类型，手动映射到Op,因为在grpc中我们使用json序列化
-					// 且我们清楚的知道map中的字段对应Op的字段
-					// 因此可以用json反序列化再转成Op，避免繁琐映射
-					b, err := json.Marshal(cmd)
-					if err == nil {
-						json.Unmarshal(b, &op)
-					} else {
-						// 错误处理
+				for _, opInterface := range message.Command {
+					var op Op
+					switch cmd := opInterface.(type) {
+					case Op:
+						op = cmd
+					case map[string]interface{}:
+						// 如果是map类型，手动映射到Op,因为在grpc中我们使用json序列化
+						// 且我们清楚的知道map中的字段对应Op的字段
+						// 因此可以用json反序列化再转成Op，避免繁琐映射
+						b, err := json.Marshal(cmd)
+						if err == nil {
+							json.Unmarshal(b, &op)
+						} else {
+							// 错误处理
+							kv.mu.Unlock()
+							continue
+						}
+					default:
+						// 其他类型不处理
 						kv.mu.Unlock()
 						continue
 					}
-				default:
-					// 其他类型不处理
-					kv.mu.Unlock()
-					continue
+					var opReply *OpReply
+					if kv.requestDuplicated(op.ClientId, op.SeqId) {
+						opReply = kv.clientSeqTable[op.ClientId].Reply
+						fmt.Println("重复请求")
+					} else {
+						// 应用到状态机中
+						mechineLock.Lock()
+						opReply = kv.applyToStateMachine(op)
+						mechineLock.Unlock()
+						// 更新clientSeqTable数据
+						kv.clientSeqTable[op.ClientId] = LastOperationInfo{
+							SeqId: op.SeqId,
+							Reply: opReply,
+						}
+					}
+					// 为了防止死锁更改，先把每个回复的结果存储起来
+					opReplies = append(opReplies, opReply)
+					notifyCh := kv.GetNotifyChannel(message.CommandIndex)
+					//fmt.Printf("commit index = %d\n", message.CommandIndex)
+					// 并且把每个通道也存储起来，最后一一的对应返回
+					notifyChs = append(notifyChs, notifyCh)
 				}
-				var opReply *OpReply
-				// 线性一致性要求，如果是重复的请求则只会执行一次被称为“请求的幂等性”
-				// 避免重复请求的多次执行
-				if kv.requestDuplicated(op.ClientId, op.SeqId) {
-					opReply = kv.clientSeqTable[op.ClientId].Reply
-				} else {
-					// 更新clientSeqTable数据
-					opReply = kv.applyToStateMachine(op)
-					kv.clientSeqTable[op.ClientId] = LastOperationInfo{
-						SeqId: op.SeqId,
-						Reply: opReply,
+				kv.mu.Unlock() // [注意] 提前释放锁，防止在net层的死锁！！！
+				// // 在锁外检查是否是 Leader 并发送结果
+				_, isLeader := kv.rf.GetState()
+				if isLeader {
+					for i, notifyCh := range notifyChs {
+						select {
+						// 一一对应的返回
+						case notifyCh <- opReplies[i]:
+						default:
+							// 防止阻塞，可选日志记录
+						}
 					}
 				}
-				// 将结果发送回去
-				if _, isLeader := kv.rf.GetState(); isLeader {
-					notifyCh := kv.GetNotifyChannel(message.CommandIndex)
-					notifyCh <- opReply
-				}
-				// 判断是否需要进行snapshot快照
-				kv.mu.Unlock()
 			}
 		}
 	}

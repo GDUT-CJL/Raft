@@ -38,7 +38,7 @@ func convertFromGrpcLogEntries(grpcEntries []*G_LogEntry) []LogEntry {
 	entries := make([]LogEntry, len(grpcEntries))
 	for i, grpcEntry := range grpcEntries {
 		// 反序列化 Command 后序再取出这条日志的时后还要序列化回来
-		var cmd interface{}
+		var cmd []interface{}
 		if len(grpcEntry.Command) > 0 {
 			json.Unmarshal(grpcEntry.Command, &cmd)
 		}

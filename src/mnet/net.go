@@ -6,9 +6,6 @@ import (
 	"net"
 )
 
-// Global counter to generate unique Client IDs
-var clientIDCounter int64
-
 // StartTCPServer 启动TCP服务器并监听来自客户端的请求
 // func StartTCPServer(kv *server.KVServer, port int) {
 // 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
