@@ -289,6 +289,7 @@ func RC_Set(key, value string) string {
 	defer C.kvs_free(unsafe.Pointer(cValue))
 	ret := C.rc_set(cKey, cValue)
 	if ret == 0 {
+		atomic.AddInt64(&rocksdbCounter, 1)
 		return "OK"
 	}
 	return "FALIED"
@@ -307,6 +308,7 @@ func RC_Delete(key string) string {
 
 	cRet := C.rc_delete(cKey)
 	if cRet == 0 {
+		atomic.AddInt64(&rocksdbCounter, -1)
 		return "OK"
 	}
 	return "FAILED"

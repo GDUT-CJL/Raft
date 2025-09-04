@@ -69,7 +69,7 @@ var commandHandlers = map[string]commandHandler{
 	// RBTree commands
 	"RSET":    handleWriteOp(server.RSet, 3),
 	"RGET":    handleReadOp(bridge.RB_Get, 2),
-	"RCOUNT":  handleCountOpWithDivisor(bridge.RB_Count, 1, 3),
+	"RCOUNT":  handleCountOp(bridge.RB_Count, 1),
 	"RDELETE": handleWriteOp(server.RDelete, 2),
 	"REXIST":  handleExistOp(bridge.RB_Exist, 2),
 
@@ -87,6 +87,11 @@ var commandHandlers = map[string]commandHandler{
 	"ZDELETE": handleWriteOp(server.ZDelete, 2),
 	"ZEXIST":  handleExistOp(bridge.Skiplist_Exist, 2),
 
+	// rocksdb commands
+	"RCSET":    handleWriteOp(server.RCSet, 3),
+	"RCGET":    handleReadOp(bridge.RC_Get, 2),
+	"RCCOUNT":  handleCountOp(bridge.RC_Count, 1),
+	"RCDELETE": handleWriteOp(server.RCDelete, 2),
 	// Special commands
 	"LEADER": handleLeaderCommand,
 	"NUM":    handleNumCommand,
@@ -174,7 +179,7 @@ func Commited(optype server.OperationType, key string, value string, conn net.Co
 		}
 		timer.Reset(batchTimeout)
 	} else {
-
+		conn.Write([]byte("ErrorNotLeader" + rf.LeaderIP + "\n")) // 不是leader节点不允许操作，强一致性
 	}
 
 }
@@ -232,22 +237,22 @@ func handleCountOp(countFunc func() int, expectedArgs int) commandHandler {
 }
 
 // 带除数的计数操作处理函数（用于RBTree）
-func handleCountOpWithDivisor(countFunc func() int, expectedArgs int, divisor int) commandHandler {
-	return func(parts []string, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
-		if len(parts) != expectedArgs {
-			conn.Write([]byte("ERR invalid " + parts[0] + " command\n"))
-			return
-		}
+// func handleCountOpWithDivisor(countFunc func() int, expectedArgs int, divisor int) commandHandler {
+// 	return func(parts []string, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
+// 		if len(parts) != expectedArgs {
+// 			conn.Write([]byte("ERR invalid " + parts[0] + " command\n"))
+// 			return
+// 		}
 
-		value := countFunc() / divisor
-		str := strconv.Itoa(value)
-		if len(str) != 0 {
-			conn.Write([]byte(str + "\n"))
-		} else {
-			conn.Write([]byte("nil\n"))
-		}
-	}
-}
+// 		value := countFunc()
+// 		str := strconv.Itoa(value)
+// 		if len(str) != 0 {
+// 			conn.Write([]byte(str + "\n"))
+// 		} else {
+// 			conn.Write([]byte("nil\n"))
+// 		}
+// 	}
+// }
 
 // 存在性检查操作处理函数
 func handleExistOp(existFunc func(string) int, expectedArgs int) commandHandler {
