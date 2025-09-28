@@ -99,8 +99,8 @@ int hset(char* key,char* value){
     // 遍历整个链表
     while(node != NULL){
         if(strcmp(node->key,key) == 0){//exist
-            pthread_mutex_unlock(&Hash->mutex);
-            return 1;
+            strncpy(node->value,value,strlen(value)+1);
+            return 0;
         }
         node = node->next;
     }

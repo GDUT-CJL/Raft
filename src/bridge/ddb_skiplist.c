@@ -143,9 +143,10 @@ int zset(char* key, char* value){
         update[i] = p;
     }
     // 将节点插入
-    if(p->next[0]!=NULL && strcmp(p->next[0]->key, key)==0)
+    if(p->next[0]!=NULL && strcmp(p->next[0]->key, key)==0)// already have same key
     {
-        return -2;  // already have same key
+        strncpy(p->next[0]->value, value,strlen(value));
+        return 0;  
     }else{
         // 新节点的层数--概率0.5
         int newlevel = 1;
