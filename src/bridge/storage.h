@@ -93,25 +93,23 @@ int exist(const char* key,size_t klen);
 // ------------------------------ hash -------------------------------- //
 #define MAX_HASHSIZE    102400
 typedef struct hashnode_s{
-    char* key;
-    char* value;
+    bstring_t* key;
+    bstring_t* value;
     struct hashnode_s* next;
 }hashnode_t;
 typedef struct hashtable_s{
     hashnode_t** nodes;
     int max_slots;  // hash表的最大槽位
     int count;  // hash表当前的数目
-	pthread_mutex_t mutex;
 }hashtable_t;
 hashtable_t* Hash;
 int init_hashtable();
 void dest_hashtable();
-int hexist(char* key);
-int hset(char* key,char* value);
-char* hget(char* key);
-int hdelete(char* key);
+int hexist(char* key,size_t klen);
+int hset(char* key,size_t klen,char* value,size_t vlen);
+uint8_t* hget(char* key,size_t klen,size_t* out_vlen);
+int hdelete(char* key,size_t klen);
 int hcount();
-
 // ------------------------ RBTree ------------------------- //
 #define MAX_RBTREE_SIZE     512
 typedef enum { RED, BLACK } Color;

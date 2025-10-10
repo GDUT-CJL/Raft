@@ -110,30 +110,37 @@ func Array_Exist(key string, klen int) int {
 }
 
 // ----------------------------Hash------------------------------------- //
-func Hash_Set(key, value string) string {
+func Hash_Set(key string, klen int, value string, vlen int) string {
 	cKey := C.CString(key)
 	cValue := C.CString(value)
+	cKlen := C.size_t(klen)
+	cVlen := C.size_t(vlen)
 	defer C.free(unsafe.Pointer(cKey))
 	defer C.free(unsafe.Pointer(cValue))
-	ret := C.hset(cKey, cValue)
+	ret := C.hset(cKey, cKlen, cValue, cVlen)
 	if ret == 0 {
 		return "OK"
 	}
 	return "FALIED"
 }
 
-func Hash_Get(key string) string {
+func Hash_Get(key string, klen int) string {
 	cKey := C.CString(key)
 	defer C.free(unsafe.Pointer(cKey))
-	cValue := C.hget(cKey)
-	return C.GoString(cValue)
+	var cVlen C.size_t
+	cValue := C.hget(cKey, C.size_t(klen), &cVlen)
+	if cValue == nil || cVlen == 0 {
+		return "" // 或返回错误
+	}
+	goBytes := C.GoBytes(unsafe.Pointer(cValue), C.int(cVlen))
+	return BinaryToPrintable(goBytes)
 }
 
-func Hash_Delete(key string) string {
+func Hash_Delete(key string, klen int) string {
 	cKey := C.CString(key)
+	cKlen := C.size_t(klen)
 	defer C.free(unsafe.Pointer(cKey)) // Don't forget to free the C string
-
-	cRet := C.hdelete(cKey)
+	cRet := C.hdelete(cKey, cKlen)
 	if cRet == 0 {
 		return "OK"
 	}
@@ -144,10 +151,11 @@ func Hash_Count() int {
 	return int(C.hcount())
 }
 
-func Hash_Exist(key string) int {
+func Hash_Exist(key string, klen int) int {
 	cKey := C.CString(key)
+	cKlen := C.size_t(klen)
 	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
-	ret := C.hexist(cKey)
+	ret := C.hexist(cKey, cKlen)
 	return int(ret)
 }
 

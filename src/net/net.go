@@ -283,7 +283,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("ERR invalid HGET command\n"))
 				continue
 			}
-			value := bridge.Hash_Get(parts[1])
+			value := bridge.Hash_Get(parts[1], len(parts[1]))
 			if len(value) != 0 {
 				conn.Write([]byte(value + "\n"))
 			} else {
@@ -300,7 +300,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("ERR invalid HExist command\n"))
 				continue
 			}
-			ret := bridge.Hash_Exist(parts[1])
+			ret := bridge.Hash_Exist(parts[1], len(parts[1]))
 			if ret == 0 {
 				conn.Write([]byte("Exist\n"))
 			} else {

@@ -133,9 +133,9 @@ func (kv *KVServer) applyToStateMachine(op Op) *OpReply {
 		value = bridge.Array_Count()
 
 	case HSet:
-		err = bridge.Hash_Set(op.Key, op.Value)
+		err = bridge.Hash_Set(op.Key, op.Klen, op.Value, op.Vlen)
 	case HDelete:
-		err = bridge.Hash_Delete(op.Key)
+		err = bridge.Hash_Delete(op.Key, op.Klen)
 	case HCount:
 		value = bridge.Hash_Count()
 
