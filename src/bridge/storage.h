@@ -11,15 +11,66 @@ extern "C" {
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <unistd.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <ctype.h>
 #define MAX_MSGBUFFER_LENGTH	1024
 #define MAX_ARRAY_NUMS	102400
 
 void* kvs_malloc(size_t size);
 void kvs_free(void* ptr);
+// ------------------------------ bstring -------------------------------- //
+typedef struct{
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    uint32_t flags;
+}bstring_t;
 
+// 标志定义
+#define BSTRING_OWNED   0x01    // 数据为自有内存
+#define BSTRING_CONST   0x02    // 数据为常量（不可修改）
+#define BSTRING_REF     0x04    // 数据为引用（不复制）
+
+// 创建和销毁
+bstring_t* bstring_new(void);// 创建一个bstring_t的结构体变量
+bstring_t* bstring_new_with_capacity(size_t capacity);// 通过传入的大小创建一个bstring_t结构体
+bstring_t* bstring_new_from_data(const void *data, size_t len);// 通过一个数据和数据长度创建一个bstring_t结构体
+bstring_t* bstring_new_from_cstr(const char *cstr);// 通过c风格字符串创建一个bstring_t结构体
+void bstring_free(bstring_t *bs);// 销毁bstring_t结构体
+
+// 基础操作
+size_t bstring_len(const bstring_t *bs);// 返回字符串长度
+const uint8_t* bstring_data(const bstring_t *bs);// 返回字符串数据
+bool bstring_empty(const bstring_t *bs);// 判断字符串是否为空
+
+// 修改操作
+int bstring_append(bstring_t *bs, const void *data, size_t len);// 修改字符串数据域
+int bstring_append_cstr(bstring_t *bs, const char *cstr);// 通过c风格字符串修改字符串数据域
+int bstring_append_bstring(bstring_t *bs, const bstring_t *other);// 通过另一个bstring_t修改数据
+
+// 清空和重置
+void bstring_clear(bstring_t *bs);// 清空数据域
+void bstring_reset(bstring_t *bs);// 重置数据域
+
+// 比较操作
+int bstring_compare(const bstring_t *bs1, const bstring_t *bs2);// 比较大小
+bool bstring_equal(const bstring_t *bs1, const bstring_t *bs2);// 比较是否相等
+
+// 打印函数
+void bstring_print_hex(const bstring_t *bs);
+void bstring_print_text(const bstring_t *bs);
+void bstring_print_detailed(const bstring_t *bs);
+
+// 转换函数
+char* bstring_to_cstr(const bstring_t* bs);
+
+// ------------------------------ array -------------------------------- //
 typedef struct kvs_array_item_s{
-	char* key;
-	char* value;
+	bstring_t* key;
+	bstring_t* value;
     long long expired;
 }kvs_array_item_t;
 
@@ -30,15 +81,12 @@ typedef struct kvs_array_s{
 }kvs_array_t;
 
 struct kvs_array_s* array_table;
-
-// ------------------------------ array -------------------------------- //
 int init_array();
-void dest_array();
-int set(char* key,char* value);
-char* get(const char* key);
-int delete(const char* key);
+int set(char* key,size_t klen,char* value,size_t vlen);
+char* get(const char* key,size_t klen);
+int delete(const char* key,size_t klen);
 int count();
-int exist(const char* key);
+int exist(const char* key,size_t klen);
 
 
 // ------------------------------ hash -------------------------------- //

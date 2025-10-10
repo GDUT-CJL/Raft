@@ -1,5 +1,6 @@
 // gcc -fPIC -c *.c
 // gcc -shared *.o -o libstorage.so
+// rm *.o
 #include "storage.h"
 void* kvs_malloc(size_t size){
 	return malloc(size);

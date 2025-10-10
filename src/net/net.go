@@ -1,63 +1,143 @@
 package net
 
-import (  
-	"fmt"  
-	"net"  
-	"os"  
-	"strings"  
+import (
+	"bufio"
+	"bytes"
 	"course/bridge"
-	"course/server"
 	"course/raft"
-	"time"
-	"sync/atomic"
+	"course/server"
+	"fmt"
 	"hash/fnv"
+	"net"
+	"os"
 	"strconv"
-)  
+	"strings"
+	"sync/atomic"
+	"time"
+)
 
-// Global counter to generate unique Client IDs  
+// Global counter to generate unique Client IDs
 var clientIDCounter int64
 
-// StartTCPServer 启动TCP服务器并监听来自客户端的请求  
-func StartTCPServer(kv *server.KVServer, port int) {  
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))  
-	if err != nil {  
-		fmt.Fprintf(os.Stderr, "Error starting TCP server: %s\n", err)  
-		return  
-	}  
-	defer listener.Close()  
-	fmt.Printf("TCP server listening on port %d\n", port)  
+// StartTCPServer 启动TCP服务器并监听来自客户端的请求
+func StartTCPServer(kv *server.KVServer, port int) {
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error starting TCP server: %s\n", err)
+		return
+	}
+	defer listener.Close()
+	fmt.Printf("TCP server listening on port %d\n", port)
 
-	for {  
-		conn, err := listener.Accept()  
-		if err != nil {  
-			fmt.Fprintf(os.Stderr, "Error accepting connection: %s\n", err)  
-			continue  
-		}  
-		// 使用 goroutine 处理连接  
-		go handleConnection(kv,conn)  
-	}  
-}  
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error accepting connection: %s\n", err)
+			continue
+		}
+		// 使用 goroutine 处理连接
+		go handleConnection(kv, conn)
+	}
+}
 
-// generateClientID generates a unique client ID for each connection  
-func generateClientID(conn net.Conn) int64 {  
-    // 结合节点IP和原子计数器
-    addr := conn.RemoteAddr().(*net.TCPAddr).IP.String()
-    hash := fnv.New64a()
-    hash.Write([]byte(addr))
-    return int64(hash.Sum64()) ^ (atomic.AddInt64(&clientIDCounter, 1) << 32)
+// generateClientID generates a unique client ID for each connection
+func generateClientID(conn net.Conn) int64 {
+	// 结合节点IP和原子计数器
+	addr := conn.RemoteAddr().(*net.TCPAddr).IP.String()
+	hash := fnv.New64a()
+	hash.Write([]byte(addr))
+	return int64(hash.Sum64()) ^ (atomic.AddInt64(&clientIDCounter, 1) << 32)
+}
+
+// 解析RESP协议
+func parseRESP(reader *bufio.Reader) ([]string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+
+	line = strings.TrimSpace(line)
+	if len(line) == 0 {
+		return nil, fmt.Errorf("empty line")
+	}
+
+	// 检查是否是数组类型
+	if line[0] != '*' {
+		return nil, fmt.Errorf("not an array type")
+	}
+
+	// 解析数组元素个数
+	arraySize, err := strconv.Atoi(line[1:])
+	if err != nil {
+		return nil, fmt.Errorf("invalid array size: %v", err)
+	}
+
+	if arraySize <= 0 {
+		return nil, fmt.Errorf("invalid array size: %d", arraySize)
+	}
+
+	var parts []string
+
+	// 解析每个元素
+	for i := 0; i < arraySize; i++ {
+		// 读取长度行
+		lengthLine, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+
+		lengthLine = strings.TrimSpace(lengthLine)
+		if len(lengthLine) == 0 || lengthLine[0] != '$' {
+			return nil, fmt.Errorf("invalid bulk string header")
+		}
+
+		// 解析字符串长度
+		strLength, err := strconv.Atoi(lengthLine[1:])
+		if err != nil {
+			return nil, fmt.Errorf("invalid string length: %v", err)
+		}
+
+		if strLength < 0 {
+			return nil, fmt.Errorf("negative string length")
+		}
+
+		// 读取实际字符串内容
+		var buffer bytes.Buffer
+		bytesRead := 0
+		for bytesRead < strLength {
+			chunk := make([]byte, strLength-bytesRead)
+			n, err := reader.Read(chunk)
+			if err != nil {
+				return nil, err
+			}
+			buffer.Write(chunk[:n])
+			bytesRead += n
+		}
+
+		// 读取结尾的\r\n
+		crlf := make([]byte, 2)
+		_, err = reader.Read(crlf)
+		if err != nil {
+			return nil, err
+		}
+
+		parts = append(parts, buffer.String())
+	}
+
+	return parts, nil
 }
 
 // 将相关操作提交，并应用到相应状态机上
-func Commited(kv *server.KVServer,conn net.Conn,parts []string,rf *raft.Raft,opType server.OperationType,part1 string,part2 string){
+func Commited(kv *server.KVServer, conn net.Conn, parts []string, rf *raft.Raft, opType server.OperationType, part1 string, klen int, part2 string, vlen int) {
 	op := server.Op{
 		OpType:   opType,
 		Key:      part1,
 		Value:    part2,
+		Klen:     klen,
+		Vlen:     vlen,
 		ClientId: generateClientID(conn),
-		SeqId:      time.Now().UnixNano(),
-	} 
-	//value := parts[2]  
-	// bridge.Set(key, value) 
+		SeqId:    time.Now().UnixNano(),
+	}
 	// 使用notifyCh确保先提交到Raft日志后再返回客户端
 	if index, _, isLeader := rf.Start(op); isLeader {
 		kv.Lock()
@@ -65,61 +145,95 @@ func Commited(kv *server.KVServer,conn net.Conn,parts []string,rf *raft.Raft,opT
 		kv.Unlock()
 		select {
 		case <-notifyCh:
-			conn.Write([]byte("OK\n")) // 返回操作结果  
-		case <-time.After(2*time.Second):
-			conn.Write([]byte("Time Out\n")) // 返回操作结果  
+			conn.Write([]byte("OK\n")) // 返回操作结果
+		case <-time.After(2 * time.Second):
+			conn.Write([]byte("Time Out\n")) // 返回操作结果
 		}
 		go func() {
 			kv.Lock()
 			kv.RemoveNotifyChannel(index)
 			kv.Unlock()
 		}()
-	}else{
+	} else {
 		conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
 	}
 }
 
-// handleConnection 处理TCP连接的请求  
-func handleConnection(kv *server.KVServer,conn net.Conn) {  
-	defer func() {  
-		fmt.Printf("Closing connection from %s\n", conn.RemoteAddr())  
-		conn.Close()  
-	}()  
+// 修改调试打印部分，使用十六进制显示来查看实际内容
+func debugPrintParts(parts []string) {
+	fmt.Printf("RESP command received: %s with %d parts\n", parts[0], len(parts))
+	for i, part := range parts {
+		// 显示原始字符串和十六进制表示
+		fmt.Printf("  Part %d: %q (length: %d, hex: ", i, part, len(part))
+		for _, b := range []byte(part) {
+			fmt.Printf("%02x ", b)
+		}
+		fmt.Printf(")\n")
+	}
+}
 
-	buffer := make([]byte, 1024)  
-	// 持续读取客户端的请求  
-	for {  
-		n, err := conn.Read(buffer)  
-		if err != nil {  
-			fmt.Fprintf(os.Stderr, "Error reading from connection: %s\n", err)  
-			return  
-		}  
-		command := string(buffer[:n])  
-		command = strings.TrimSpace(command) // 去掉首尾空白  
+// handleConnection 处理TCP连接的请求
+func handleConnection(kv *server.KVServer, conn net.Conn) {
+	defer func() {
+		fmt.Printf("Closing connection from %s\n", conn.RemoteAddr())
+		conn.Close()
+	}()
+
+	reader := bufio.NewReader(conn)
+
+	// 持续读取客户端的请求
+	for {
+		// 尝试解析RESP协议
+		parts, err := parseRESP(reader)
+		var action string
+
+		if err != nil {
+			// 如果不是RESP格式，回退到原有文本协议处理
+			conn.Write([]byte("ERR invalid RESP format, falling back to text protocol\n"))
+
+			// 原有的文本协议处理逻辑（作为后备）
+			buffer := make([]byte, 1024)
+			n, err := conn.Read(buffer)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error reading from connection: %s\n", err)
+				return
+			}
+			command := string(buffer[:n])
+			command = strings.TrimSpace(command)
+			parts = strings.Split(command, " ")
+			if len(parts) < 1 {
+				conn.Write([]byte("Invalid command\n"))
+				continue
+			}
+			action = strings.ToUpper(parts[0])
+		} else {
+			// RESP解析成功
+			if len(parts) < 1 {
+				conn.Write([]byte("Invalid command\n"))
+				continue
+			}
+			action = strings.ToUpper(parts[0])
+			debugPrintParts(parts)
+		}
+
 		rf := kv.GetRaft()
-		// 解析命令  
-		parts := strings.Split(command, " ")  
-		if len(parts) < 1 {  
-			conn.Write([]byte("Invalid command\n"))  
-			continue  
-		}  
-		action := strings.ToUpper(parts[0]) // 转换为大写以支持不区分大小写  
-		switch action {  
-		case "SET":  
-			if len(parts) != 3 {  
-				conn.Write([]byte("Invalid SET command\n"))  
-				continue  
-			} 
-			Commited(kv,conn,parts,rf,server.Set,parts[1],parts[2])
-		case "GET": 
+
+		switch action {
+		case "SET":
+			if len(parts) != 3 {
+				conn.Write([]byte("Invalid SET command\n"))
+				continue
+			}
+			Commited(kv, conn, parts, rf, server.Set, parts[1], len(parts[1]), parts[2], len(parts[2]))
+		case "GET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid GET command\n"))
 				continue
 			}
-			value := bridge.Array_Get(parts[1])
-			if len(value) != 0{
+			value := bridge.Array_Get(parts[1], len(parts[1]))
+			if len(value) != 0 {
 				conn.Write([]byte(value + "\n"))
-			}else{
+			} else {
 				conn.Write([]byte("nil\n"))
 			}
 		case "DELETE":
@@ -127,7 +241,7 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				conn.Write([]byte("ERR invalid Delete command\n"))
 				continue
 			}
-			Commited(kv,conn,parts,rf,server.Delete,parts[1],parts[1])
+			Commited(kv, conn, parts, rf, server.Delete, parts[1], len(parts[1]), parts[1], len(parts[1]))
 		case "COUNT":
 			if len(parts) != 1 {
 				conn.Write([]byte("ERR invalid Count command\n"))
@@ -138,11 +252,11 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				Key:      parts[0],
 				ClientId: generateClientID(conn),
 				SeqId:    time.Now().UnixNano(),
-			} 
+			}
 			if _, _, isLeader := rf.Start(op); !isLeader {
 				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
-			}else{
-				count := bridge.Array_Count() / rf.GetPeerLen()
+			} else {
+				count := bridge.Array_Count()
 				// int 转为 string
 				s := strconv.Itoa(count)
 				conn.Write([]byte(s + "\n"))
@@ -152,27 +266,27 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				conn.Write([]byte("ERR invalid Exist command\n"))
 				continue
 			}
-			ret := bridge.Array_Exist(parts[1])
-			if ret == 0{
+			ret := bridge.Array_Exist(parts[1], len(parts[1]))
+			if ret == 0 {
 				conn.Write([]byte("Exist\n"))
-			}else{
+			} else {
 				conn.Write([]byte("not Exist\n"))
 			}
 		case "HSET":
-			if len(parts) != 3 {  
-				conn.Write([]byte("Invalid HSET command\n"))  
-				continue  
-			} 
-			Commited(kv,conn,parts,rf,server.HSet,parts[1],parts[2])
+			if len(parts) != 3 {
+				conn.Write([]byte("Invalid HSET command\n"))
+				continue
+			}
+			Commited(kv, conn, parts, rf, server.HSet, parts[1], len(parts[1]), parts[2], len(parts[2]))
 		case "HGET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid HGET command\n"))
 				continue
 			}
 			value := bridge.Hash_Get(parts[1])
-			if len(value) != 0{
+			if len(value) != 0 {
 				conn.Write([]byte(value + "\n"))
-			}else{
+			} else {
 				conn.Write([]byte("nil\n"))
 			}
 		case "HDELETE":
@@ -180,16 +294,16 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				conn.Write([]byte("ERR invalid HDelete command\n"))
 				continue
 			}
-			Commited(kv,conn,parts,rf,server.HDelete,parts[1],parts[1])
+			Commited(kv, conn, parts, rf, server.HDelete, parts[1], len(parts[1]), parts[1], len(parts[1]))
 		case "HEXIST":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid HExist command\n"))
 				continue
 			}
 			ret := bridge.Hash_Exist(parts[1])
-			if ret == 0{
+			if ret == 0 {
 				conn.Write([]byte("Exist\n"))
-			}else{
+			} else {
 				conn.Write([]byte("not Exist\n"))
 			}
 		case "HCOUNT":
@@ -202,30 +316,30 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				Key:      parts[0],
 				ClientId: generateClientID(conn),
 				SeqId:    time.Now().UnixNano(),
-			} 
+			}
 			if _, _, isLeader := rf.Start(op); !isLeader {
 				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
-			}else{
+			} else {
 				count := bridge.Hash_Count()
 				// int 转为 string
 				s := strconv.Itoa(count)
 				conn.Write([]byte(s + "\n"))
 			}
 		case "RSET":
-			if len(parts) != 3 {  
-				conn.Write([]byte("Invalid RSET command\n"))  
-				continue  
-			} 
-			Commited(kv,conn,parts,rf,server.RSet,parts[1],parts[2])			
+			if len(parts) != 3 {
+				conn.Write([]byte("Invalid RSET command\n"))
+				continue
+			}
+			Commited(kv, conn, parts, rf, server.RSet, parts[1], len(parts[1]), parts[2], len(parts[2]))
 		case "RGET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid RGET command\n"))
 				continue
 			}
 			value := bridge.RB_Get(parts[1])
-			if len(value) != 0{
+			if len(value) != 0 {
 				conn.Write([]byte(value + "\n"))
-			}else{
+			} else {
 				conn.Write([]byte("nil\n"))
 			}
 		case "RDELETE":
@@ -233,16 +347,16 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				conn.Write([]byte("ERR invalid RDelete command\n"))
 				continue
 			}
-			Commited(kv,conn,parts,rf,server.RDelete,parts[1],parts[1])
+			Commited(kv, conn, parts, rf, server.RDelete, parts[1], len(parts[1]), parts[1], len(parts[1]))
 		case "REXIST":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid RExist command\n"))
 				continue
 			}
 			ret := bridge.RB_Exist(parts[1])
-			if ret == 0{
+			if ret == 0 {
 				conn.Write([]byte("Exist\n"))
-			}else{
+			} else {
 				conn.Write([]byte("not Exist\n"))
 			}
 		case "RCOUNT":
@@ -255,30 +369,30 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				Key:      parts[0],
 				ClientId: generateClientID(conn),
 				SeqId:    time.Now().UnixNano(),
-			} 
+			}
 			if _, _, isLeader := rf.Start(op); !isLeader {
 				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
-			}else{
+			} else {
 				count := bridge.RB_Count() / rf.GetPeerLen()
 				// int 转为 string
 				s := strconv.Itoa(count)
 				conn.Write([]byte(s + "\n"))
 			}
 		case "BSET":
-			if len(parts) != 3 {  
-				conn.Write([]byte("Invalid BSET command\n"))  
-				continue  
-			} 
-			Commited(kv,conn,parts,rf,server.BSet,parts[1],parts[2])			
+			if len(parts) != 3 {
+				conn.Write([]byte("Invalid BSET command\n"))
+				continue
+			}
+			Commited(kv, conn, parts, rf, server.BSet, parts[1], len(parts[1]), parts[2], len(parts[2]))
 		case "BGET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid BGET command\n"))
 				continue
 			}
 			value := bridge.BTree_Get(parts[1])
-			if len(value) != 0{
+			if len(value) != 0 {
 				conn.Write([]byte(value + "\n"))
-			}else{
+			} else {
 				conn.Write([]byte("nil\n"))
 			}
 		case "BDELETE":
@@ -286,16 +400,16 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				conn.Write([]byte("ERR invalid BDelete command\n"))
 				continue
 			}
-			Commited(kv,conn,parts,rf,server.BDelete,parts[1],parts[1])
+			Commited(kv, conn, parts, rf, server.BDelete, parts[1], len(parts[1]), parts[1], len(parts[1]))
 		case "BEXIST":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid BExist command\n"))
 				continue
 			}
 			ret := bridge.BTree_Exist(parts[1])
-			if ret == 0{
+			if ret == 0 {
 				conn.Write([]byte("Exist\n"))
-			}else{
+			} else {
 				conn.Write([]byte("not Exist\n"))
 			}
 		case "BCOUNT":
@@ -308,10 +422,10 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				Key:      parts[0],
 				ClientId: generateClientID(conn),
 				SeqId:    time.Now().UnixNano(),
-			} 
+			}
 			if _, _, isLeader := rf.Start(op); !isLeader {
 				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
-			}else{
+			} else {
 				count := bridge.BTree_Count()
 				// int 转为 string
 				s := strconv.Itoa(count)
@@ -319,20 +433,20 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 			}
 
 		case "ZSET":
-			if len(parts) != 3 {  
-				conn.Write([]byte("Invalid ZSET command\n"))  
-				continue  
-			} 
-			Commited(kv,conn,parts,rf,server.ZSet,parts[1],parts[2])			
+			if len(parts) != 3 {
+				conn.Write([]byte("Invalid ZSET command\n"))
+				continue
+			}
+			Commited(kv, conn, parts, rf, server.ZSet, parts[1], len(parts[1]), parts[2], len(parts[2]))
 		case "ZGET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid ZGET command\n"))
 				continue
 			}
 			value := bridge.Skiplist_Get(parts[1])
-			if len(value) != 0{
+			if len(value) != 0 {
 				conn.Write([]byte(value + "\n"))
-			}else{
+			} else {
 				conn.Write([]byte("nil\n"))
 			}
 		case "ZDELETE":
@@ -340,16 +454,16 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				conn.Write([]byte("ERR invalid ZDelete command\n"))
 				continue
 			}
-			Commited(kv,conn,parts,rf,server.ZDelete,parts[1],parts[1])
+			Commited(kv, conn, parts, rf, server.ZDelete, parts[1], len(parts[1]), parts[1], len(parts[1]))
 		case "ZEXIST":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid ZExist command\n"))
 				continue
 			}
 			ret := bridge.Skiplist_Exist(parts[1])
-			if ret == 0{
+			if ret == 0 {
 				conn.Write([]byte("Exist\n"))
-			}else{
+			} else {
 				conn.Write([]byte("not Exist\n"))
 			}
 		case "ZCOUNT":
@@ -362,10 +476,10 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 				Key:      parts[0],
 				ClientId: generateClientID(conn),
 				SeqId:    time.Now().UnixNano(),
-			} 
+			}
 			if _, _, isLeader := rf.Start(op); !isLeader {
 				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
-			}else{
+			} else {
 				count := bridge.Skiplist_Count()
 				// int 转为 string
 				s := strconv.Itoa(count)
@@ -374,14 +488,14 @@ func handleConnection(kv *server.KVServer,conn net.Conn) {
 		// 返回该节点是不是leader
 		case "LEADER":
 			currentTerm, isLeader := rf.GetState()
-			fmt.Printf("当前状态: %v, 当前任期: %d\n",isLeader,currentTerm)
-			if isLeader{
-				conn.Write([]byte("isLeader" + "\n")) // 返回获取的值  
-			}else{
-				conn.Write([]byte("isCluster" + "\n")) // 返回获取的值  
+			fmt.Printf("当前状态: %v, 当前任期: %d\n", isLeader, currentTerm)
+			if isLeader {
+				conn.Write([]byte("isLeader" + "\n")) // 返回获取的值
+			} else {
+				conn.Write([]byte("isCluster" + "\n")) // 返回获取的值
 			}
-		default:  
-			conn.Write([]byte("Unknown command\n")) // 返回未识别的命令  
-		}  
-	}  
-} 
+		default:
+			conn.Write([]byte("Unknown command\n")) // 返回未识别的命令
+		}
+	}
+}

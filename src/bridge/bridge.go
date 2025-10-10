@@ -1,4 +1,5 @@
 package bridge
+
 /*
 #cgo CFLAGS: -I./
 #cgo LDFLAGS: -L. -lstorage
@@ -7,231 +8,236 @@ package bridge
 */
 import "C"
 import "unsafe"
+
 // import "fmt"
 func InitStorage() {
-    C.init_array()
-    C.init_hashtable()
-    C.init_rbtree()
-    C.init_btree(C.int(5))
-    C.init_skipTable()
+	C.init_array()
+	C.init_hashtable()
+	C.init_rbtree()
+	C.init_btree(C.int(5))
+	C.init_skipTable()
 }
 
-func DestoryStorage(){
-    C.dest_array()
-    C.dest_hashtable()
-    C.dest_rbtree()
-    C.dest_btree()
-    C.dest_skiplist()
-}
-// ----------------------------Array------------------------------------- // 
-func Array_Set(key, value string) string {
-    cKey := C.CString(key)
-    cValue := C.CString(value)
-    defer C.free(unsafe.Pointer(cKey))
-    defer C.free(unsafe.Pointer(cValue))
-    ret := C.set(cKey, cValue)
-    if ret == 0{
-        return "OK"
-    }
-    return "FALIED"
+func DestoryStorage() {
+	C.dest_hashtable()
+	C.dest_rbtree()
+	C.dest_btree()
+	C.dest_skiplist()
 }
 
-func Array_Get(key string) string {
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))
-    cValue := C.get(cKey)
+// ----------------------------Array------------------------------------- //
+func Array_Set(key string, klen int, value string, vlen int) string {
+	cKey := C.CString(key)
+	cValue := C.CString(value)
+	cKlen := C.size_t(klen)
+	cVlen := C.size_t(vlen)
+	defer C.free(unsafe.Pointer(cKey))
+	defer C.free(unsafe.Pointer(cValue))
+	ret := C.set(cKey, cKlen, cValue, cVlen)
+	if ret == 0 {
+		return "OK"
+	}
+	return "FALIED"
+}
+
+func Array_Get(key string, klen int) string {
+	cKey := C.CString(key)
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey))
+	cValue := C.get(cKey, cKlen)
 	// if cValue == nil{
 	// 	return "NO EXITS"
 	// }
-    return C.GoString(cValue)
+	return C.GoString(cValue)
 }
 
-func Array_Delete(key string) string {
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))  // 释放 C 字符串  
-    cRet := C.delete(cKey)
-    if cRet == 0{
-        return "OK" 
-    }
-    return "FALIED"
+func Array_Delete(key string, klen int) string {
+	cKey := C.CString(key)
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	cRet := C.delete(cKey, cKlen)
+	if cRet == 0 {
+		return "OK"
+	}
+	return "FALIED"
 }
 
 func Array_Count() int {
-    return int(C.count())
+	return int(C.count())
 }
 
-func Array_Exist(key string) int{
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))  // 释放 C 字符串 
-    ret := C.exist(cKey)
-    return int(ret)
+func Array_Exist(key string, klen int) int {
+	cKey := C.CString(key)
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	ret := C.exist(cKey, cKlen)
+	return int(ret)
 }
 
-// ----------------------------Hash------------------------------------- // 
+// ----------------------------Hash------------------------------------- //
 func Hash_Set(key, value string) string {
-    cKey := C.CString(key)
-    cValue := C.CString(value)
-    defer C.free(unsafe.Pointer(cKey))
-    defer C.free(unsafe.Pointer(cValue))
-    ret := C.hset(cKey, cValue)
-    if ret == 0{
-        return "OK"
-    }
-    return "FALIED"
+	cKey := C.CString(key)
+	cValue := C.CString(value)
+	defer C.free(unsafe.Pointer(cKey))
+	defer C.free(unsafe.Pointer(cValue))
+	ret := C.hset(cKey, cValue)
+	if ret == 0 {
+		return "OK"
+	}
+	return "FALIED"
 }
 
 func Hash_Get(key string) string {
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))
-    cValue := C.hget(cKey)
-    return C.GoString(cValue)
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey))
+	cValue := C.hget(cKey)
+	return C.GoString(cValue)
 }
 
 func Hash_Delete(key string) string {
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))  // Don't forget to free the C string
-    
-    cRet := C.hdelete(cKey)
-    if cRet == 0 {
-        return "OK" 
-    }
-    return "FAILED"
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey)) // Don't forget to free the C string
+
+	cRet := C.hdelete(cKey)
+	if cRet == 0 {
+		return "OK"
+	}
+	return "FAILED"
 }
 
 func Hash_Count() int {
-    return int(C.hcount())
+	return int(C.hcount())
 }
 
-func Hash_Exist(key string) int{
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))  // 释放 C 字符串  
-    ret := C.hexist(cKey)
-    return int(ret)
+func Hash_Exist(key string) int {
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	ret := C.hexist(cKey)
+	return int(ret)
 }
 
-// ----------------------------RBTree------------------------------------- // 
+// ----------------------------RBTree------------------------------------- //
 func RB_Set(key, value string) string {
-    cKey := C.CString(key)
-    cValue := C.CString(value)
-    defer C.free(unsafe.Pointer(cKey))
-    defer C.free(unsafe.Pointer(cValue))
-    ret := C.rset(cKey, cValue)
-    if ret == 0{
-        return "OK"
-    }
-    return "FALIED"
+	cKey := C.CString(key)
+	cValue := C.CString(value)
+	defer C.free(unsafe.Pointer(cKey))
+	defer C.free(unsafe.Pointer(cValue))
+	ret := C.rset(cKey, cValue)
+	if ret == 0 {
+		return "OK"
+	}
+	return "FALIED"
 }
 
 func RB_Get(key string) string {
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))
-    cValue := C.rget(cKey)
-    return C.GoString(cValue)
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey))
+	cValue := C.rget(cKey)
+	return C.GoString(cValue)
 }
 
 func RB_Delete(key string) string {
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))  // Don't forget to free the C string
-    
-    cRet := C.rdelete(cKey)
-    if cRet == 0 {
-        return "OK" 
-    }
-    return "FAILED"
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey)) // Don't forget to free the C string
+
+	cRet := C.rdelete(cKey)
+	if cRet == 0 {
+		return "OK"
+	}
+	return "FAILED"
 }
 
 func RB_Count() int {
-    return int(C.rcount())
+	return int(C.rcount())
 }
 
-func RB_Exist(key string) int{
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))  // 释放 C 字符串  
-    ret := C.rexist(cKey)
-    return int(ret)
+func RB_Exist(key string) int {
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	ret := C.rexist(cKey)
+	return int(ret)
 }
 
-// ----------------------------BTree------------------------------------- // 
+// ----------------------------BTree------------------------------------- //
 func BTree_Set(key, value string) string {
-    cKey := C.CString(key)
-    cValue := C.CString(value)
-    defer C.free(unsafe.Pointer(cKey))
-    defer C.free(unsafe.Pointer(cValue))
-    ret := C.bset(cKey, cValue)
-    if ret == 0{
-        return "OK"
-    }
-    return "FALIED"
+	cKey := C.CString(key)
+	cValue := C.CString(value)
+	defer C.free(unsafe.Pointer(cKey))
+	defer C.free(unsafe.Pointer(cValue))
+	ret := C.bset(cKey, cValue)
+	if ret == 0 {
+		return "OK"
+	}
+	return "FALIED"
 }
 
 func BTree_Get(key string) string {
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))
-    cValue := C.bget(cKey)
-    return C.GoString(cValue)
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey))
+	cValue := C.bget(cKey)
+	return C.GoString(cValue)
 }
 
 func BTree_Delete(key string) string {
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))  // Don't forget to free the C string
-    
-    cRet := C.bdelete(cKey)
-    if cRet == 0 {
-        return "OK" 
-    }
-    return "FAILED"
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey)) // Don't forget to free the C string
+
+	cRet := C.bdelete(cKey)
+	if cRet == 0 {
+		return "OK"
+	}
+	return "FAILED"
 }
 
 func BTree_Count() int {
-    return int(C.bcount())
+	return int(C.bcount())
 }
 
-func BTree_Exist(key string) int{
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))  // 释放 C 字符串  
-    ret := C.bexist(cKey)
-    return int(ret)
+func BTree_Exist(key string) int {
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	ret := C.bexist(cKey)
+	return int(ret)
 }
 
-
-// ---------------------------- SkipList ------------------------------------- // 
+// ---------------------------- SkipList ------------------------------------- //
 func Skiplist_Set(key, value string) string {
-    cKey := C.CString(key)
-    cValue := C.CString(value)
-    defer C.free(unsafe.Pointer(cKey))
-    defer C.free(unsafe.Pointer(cValue))
-    ret := C.zset(cKey, cValue)
-    if ret == 0{
-        return "OK"
-    }
-    return "FALIED"
+	cKey := C.CString(key)
+	cValue := C.CString(value)
+	defer C.free(unsafe.Pointer(cKey))
+	defer C.free(unsafe.Pointer(cValue))
+	ret := C.zset(cKey, cValue)
+	if ret == 0 {
+		return "OK"
+	}
+	return "FALIED"
 }
 
 func Skiplist_Get(key string) string {
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))
-    cValue := C.zget(cKey)
-    return C.GoString(cValue)
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey))
+	cValue := C.zget(cKey)
+	return C.GoString(cValue)
 }
 
 func Skiplist_Delete(key string) string {
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))  // Don't forget to free the C string
-    
-    cRet := C.zdelete(cKey)
-    if cRet == 0 {
-        return "OK" 
-    }
-    return "FAILED"
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey)) // Don't forget to free the C string
+
+	cRet := C.zdelete(cKey)
+	if cRet == 0 {
+		return "OK"
+	}
+	return "FAILED"
 }
 
 func Skiplist_Count() int {
-    return int(C.zcount())
+	return int(C.zcount())
 }
 
-func Skiplist_Exist(key string) int{
-    cKey := C.CString(key)
-    defer C.free(unsafe.Pointer(cKey))  // 释放 C 字符串  
-    ret := C.zexist(cKey)
-    return int(ret)
+func Skiplist_Exist(key string) int {
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	ret := C.zexist(cKey)
+	return int(ret)
 }
