@@ -83,7 +83,8 @@ typedef struct kvs_array_s{
 struct kvs_array_s* array_table;
 int init_array();
 int set(char* key,size_t klen,char* value,size_t vlen);
-char* get(const char* key,size_t klen);
+uint8_t* get(const char* key, size_t klen, size_t* out_vlen);
+//char* get(const char* key,size_t klen);
 int delete(const char* key,size_t klen);
 int count();
 int exist(const char* key,size_t klen);

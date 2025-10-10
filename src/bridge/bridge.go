@@ -8,6 +8,37 @@ package bridge
 */
 import "C"
 import "unsafe"
+import "fmt"
+import "strings"
+
+// BinaryToPrintable 将二进制数据转义为可打印字符串
+func BinaryToPrintable(data []byte) string {
+	var builder strings.Builder
+	for _, b := range data {
+		switch b {
+		case 0:
+			builder.WriteString("\\0") // 或 "\\x00"
+		case '\n':
+			builder.WriteString("\\n")
+		case '\r':
+			builder.WriteString("\\r")
+		case '\t':
+			builder.WriteString("\\t")
+		case '\\':
+			builder.WriteString("\\\\")
+		case '"':
+			builder.WriteString("\\\"")
+		default:
+			if b >= 32 && b <= 126 { // 可打印 ASCII
+				builder.WriteByte(b)
+			} else {
+				// 不可打印字符用 \xXX 表示
+				builder.WriteString(fmt.Sprintf("\\x%02x", b))
+			}
+		}
+	}
+	return builder.String()
+}
 
 // import "fmt"
 func InitStorage() {
@@ -42,13 +73,17 @@ func Array_Set(key string, klen int, value string, vlen int) string {
 
 func Array_Get(key string, klen int) string {
 	cKey := C.CString(key)
-	cKlen := C.size_t(klen)
 	defer C.free(unsafe.Pointer(cKey))
-	cValue := C.get(cKey, cKlen)
-	// if cValue == nil{
-	// 	return "NO EXITS"
-	// }
-	return C.GoString(cValue)
+
+	var cVlen C.size_t
+	cValue := C.get(cKey, C.size_t(klen), &cVlen)
+
+	if cValue == nil || cVlen == 0 {
+		return "" // 或返回错误
+	}
+	// ✅ 使用 GoBytes 安全转换任意二进制数据
+	goBytes := C.GoBytes(unsafe.Pointer(cValue), C.int(cVlen))
+	return BinaryToPrintable(goBytes)
 }
 
 func Array_Delete(key string, klen int) string {

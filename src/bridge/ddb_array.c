@@ -94,14 +94,19 @@ int kvs_set_array_expired(char* key,char* value,char* cmd,int expired){
 }
 
 // array get 
-char* get(const char* key,size_t klen){
-	bstring_t* bkey = bstring_new_from_data(key,klen);
-	kvs_array_item_t* get = kvs_array_search_item(bkey);
-	if(get){
-		char* v = bstring_to_cstr(get->value);
-		return v;
-	}
-	return NULL;
+// C 函数：同时返回数据指针和长度
+uint8_t* get(const char* key, size_t klen, size_t* out_vlen) {
+    bstring_t* bkey = bstring_new_from_data(key, klen);
+    kvs_array_item_t* item = kvs_array_search_item(bkey);
+    bstring_free(bkey); // 别忘了释放临时 key
+
+    if (item && item->value) {
+        *out_vlen = item->value->len;  // 👈 关键：返回真实长度
+        return item->value->data;
+    } else {
+        *out_vlen = 0;
+        return NULL;
+    }
 }
 // array delete
 int delete(const char* key,size_t klen){  
