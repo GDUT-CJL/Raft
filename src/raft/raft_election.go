@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+var LeaderId int //全局遍历记录LeaderId
 func getLocalIP() (string, error) {
 	// 获取所有网络接口
 	addrs, err := net.InterfaceAddrs()
@@ -209,6 +210,7 @@ func (rf *Raft) startElection(term int) {
 			if vote > len(rf.peers)/2 { //如果我的票数大于一半以上的同意票
 				rf.becomeLeaderLocked() // 那么我成为leader
 				ip, err := getLocalIP()
+				LeaderId = rf.me
 				if err != nil {
 					fmt.Println("Error:", err)
 					return

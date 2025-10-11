@@ -251,6 +251,11 @@ func (rf *Raft) contextLostLocked(role Role, term int) bool {
 func MakeRaft() *Raft {
 	return &Raft{}
 }
+func (rf *Raft) GetLeaderId() int {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return LeaderId
+}
 
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this

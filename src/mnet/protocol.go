@@ -18,91 +18,35 @@ import (
 	"strconv"
 )
 
+var (
+	batchBufferMap  = make(map[net.Conn][]server.Op) //key为对应的一个连接 value为操作数组
+	batchMutex      = &sync.RWMutex{}                // 批量提交数组的锁
+	batchSize       = 1000                           // 一次累计批量提交大小
+	batchTimeout    = 3000 * time.Millisecond        // 超时提交时间
+	clientIDCounter int64
+	seqIDCounter    int64
+)
+
 func generateSeqID() int64 {
 	return atomic.AddInt64(&seqIDCounter, 1)
 }
 
-var (
-	batchBufferMap  = make(map[net.Conn][]server.Op)
-	batchMutex      = &sync.RWMutex{}
-	batchSize       = 1000
-	batchTimeout    = 3000 * time.Millisecond
-	seqIDCounter    int64
-	clientIDCounter int64
-)
-
-// 定义命令处理器类型
-type commandHandler func(parts []string, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer)
-
 // generateClientID generates a unique client ID for each connection
 func generateClientID(conn net.Conn) int64 {
-	// 结合节点IP和原子计数器
 	addr := conn.RemoteAddr().(*net.TCPAddr).IP.String()
 	hash := fnv.New64a()
 	hash.Write([]byte(addr))
 	return int64(hash.Sum64()) ^ (atomic.AddInt64(&clientIDCounter, 1) << 32)
 }
 
-// 命令映射表
-/*
-	handleWriteOp：处理所有写操作（SET、DELETE等）
-	handleReadOp：处理所有读操作（GET等）
-	handleCountOp：处理计数操作（COUNT等）
-	handleExistOp：处理存在性检查操作（EXIST等）
-*/
-
-var commandHandlers = map[string]commandHandler{
-	// Array commands
-	"SET":    handleWriteOp(server.Set, 3),
-	"GET":    handleReadOp(bridge.Array_Get, 2),
-	"COUNT":  handleCountOp(bridge.Array_Count, 1),
-	"DELETE": handleWriteOp(server.Delete, 2),
-	"EXIST":  handleExistOp(bridge.Array_Exist, 2),
-
-	// Hash commands
-	"HSET":    handleWriteOp(server.HSet, 3),
-	"HGET":    handleReadOp(bridge.Hash_Get, 2),
-	"HCOUNT":  handleCountOp(bridge.Hash_Count, 1),
-	"HDELETE": handleWriteOp(server.HDelete, 2),
-	"HEXIST":  handleExistOp(bridge.Hash_Exist, 2),
-
-	// RBTree commands
-	"RSET":    handleWriteOp(server.RSet, 3),
-	"RGET":    handleReadOp(bridge.RB_Get, 2),
-	"RCOUNT":  handleCountOp(bridge.RB_Count, 1),
-	"RDELETE": handleWriteOp(server.RDelete, 2),
-	"REXIST":  handleExistOp(bridge.RB_Exist, 2),
-
-	// BTree commands
-	"BSET":    handleWriteOp(server.BSet, 3),
-	"BGET":    handleReadOp(bridge.BTree_Get, 2),
-	"BCOUNT":  handleCountOp(bridge.BTree_Count, 1),
-	"BDELETE": handleWriteOp(server.BDelete, 2),
-	"BEXIST":  handleExistOp(bridge.BTree_Exist, 2),
-
-	// Skiplist commands
-	"ZSET":    handleWriteOp(server.ZSet, 3),
-	"ZGET":    handleReadOp(bridge.Skiplist_Get, 2),
-	"ZCOUNT":  handleCountOp(bridge.Skiplist_Count, 1),
-	"ZDELETE": handleWriteOp(server.ZDelete, 2),
-	"ZEXIST":  handleExistOp(bridge.Skiplist_Exist, 2),
-
-	// rocksdb commands
-	"RCSET":    handleWriteOp(server.RCSet, 3),
-	"RCGET":    handleReadOp(bridge.RC_Get, 2),
-	"RCCOUNT":  handleCountOp(bridge.RC_Count, 1),
-	"RCDELETE": handleWriteOp(server.RCDelete, 2),
-	// Special commands
-	"LEADER": handleLeaderCommand,
-	"NUM":    handleNumCommand,
-}
-
+// sendBatch sends a batch of operations to Raft
 func sendBatch(kv *server.KVServer, conn net.Conn, batch []server.Op, rf *raft.Raft) {
 	if len(batch) == 0 {
 		conn.Write([]byte("EMPTY_BATCH\n"))
 		return
 	}
 
+	// Convert batch to []interface{}
 	batchInterface := make([]interface{}, len(batch))
 	for i, op := range batch {
 		batchInterface[i] = op
@@ -119,196 +63,111 @@ func sendBatch(kv *server.KVServer, conn net.Conn, batch []server.Op, rf *raft.R
 	select {
 	case <-notifyCh:
 		conn.Write([]byte("BATCH_OK\n"))
+		kv.RemoveNotifyChannel(index) // 立即移除通知通道，避免竞争条件
 	case <-time.After(5 * time.Second):
 		conn.Write([]byte("BATCH_TIMEOUT\n"))
+		kv.RemoveNotifyChannel(index) // 超时后也移除通道
 	}
 
-	// 延迟清理通知通道
+	// Clean up notification channel
 	go func() {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond) // Small delay to ensure all notifications are processed
 		kv.RemoveNotifyChannel(index)
 	}()
 }
 
+// flushBatch flushes the batch for a specific connection
 func flushBatch(kv *server.KVServer, conn net.Conn, rf *raft.Raft) {
 	batchMutex.Lock()
 	defer batchMutex.Unlock()
 
 	batch := batchBufferMap[conn]
 	if len(batch) > 0 {
+		// 复制并清空原缓冲区
 		batchToSend := make([]server.Op, len(batch))
 		copy(batchToSend, batch)
-		batchBufferMap[conn] = nil
+		batchBufferMap[conn] = nil // 清空而非删除
 		sendBatch(kv, conn, batchToSend, rf)
 	}
 }
 
+// addToBatch 将op日志累计添加到某个map的key连接对应的value的op数组中
 func addToBatch(op server.Op, conn net.Conn, kv *server.KVServer, rf *raft.Raft) {
 	batchMutex.Lock()
 	defer batchMutex.Unlock()
 
+	// 如果对应累计没有数组则创建
 	if _, exists := batchBufferMap[conn]; !exists {
 		batchBufferMap[conn] = make([]server.Op, 0, batchSize)
 	}
 
+	// 将日志添加到缓存区中等待提交
 	batchBufferMap[conn] = append(batchBufferMap[conn], op)
 
+	// 如果日志长度大于我们规定的batchSize的长度则进行一次提交
 	if len(batchBufferMap[conn]) >= batchSize {
 		batch := make([]server.Op, len(batchBufferMap[conn]))
 		copy(batch, batchBufferMap[conn])
-		batchBufferMap[conn] = nil
+		batchBufferMap[conn] = nil // 清空缓冲区
 		go sendBatch(kv, conn, batch, rf)
 	}
 }
 
+// 日志批量提交操作
 func Commited(optype server.OperationType, key string, value string, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
-
-	if _, isLeader := rf.GetState(); isLeader {
-		op := server.Op{
-			OpType:   optype,
-			Key:      key,
-			Value:    value,
-			ClientId: generateClientID(conn),
-			SeqId:    generateSeqID(),
+	var peer int
+	if _, isLeader := rf.GetState(); !isLeader {
+		for peer = 0; peer < rf.GetPeerLen(); peer++ {
+			if peer == rf.GetLeaderId() {
+				break
+			}
 		}
-		addToBatch(op, conn, kv, rf)
-		conn.Write([]byte("ACK\n"))
-
-		if !timer.Stop() {
-			<-timer.C
-		}
-		timer.Reset(batchTimeout)
-	} else {
-		conn.Write([]byte("ErrorNotLeader" + rf.LeaderIP + "\n")) // 不是leader节点不允许操作，强一致性
+		s := strconv.Itoa(peer)
+		conn.Write([]byte("Leader is Node " + s + "\n"))
+		return
 	}
 
-}
-
-// 通用写操作处理函数
-func handleWriteOp(opType server.OperationType, expectedArgs int) commandHandler {
-	return func(parts []string, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
-		if len(parts) != expectedArgs {
-			conn.Write([]byte("Invalid " + parts[0] + " command\n"))
-			return
-		}
-
-		value := parts[1]
-		if expectedArgs == 3 {
-			value = parts[2]
-		}
-
-		Commited(opType, parts[1], value, conn, kv, rf, timer)
+	op := server.Op{
+		OpType:   optype,
+		Key:      key,
+		Value:    value,
+		ClientId: generateClientID(conn),
+		SeqId:    generateSeqID(), // 使用原子递增，防止并发过高而重复
 	}
-}
-
-// 通用读操作处理函数
-func handleReadOp(readFunc func(string) string, expectedArgs int) commandHandler {
-	return func(parts []string, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
-		if len(parts) != expectedArgs {
-			conn.Write([]byte("ERR invalid " + parts[0] + " command\n"))
-			return
-		}
-
-		value := readFunc(parts[1])
-		if len(value) != 0 {
-			conn.Write([]byte(value + "\n"))
-		} else {
-			conn.Write([]byte("nil\n"))
-		}
+	addToBatch(op, conn, kv, rf)
+	conn.Write([]byte("ACK\n"))
+	// Reset timer on each operation
+	if !timer.Stop() {
+		<-timer.C
 	}
+	timer.Reset(batchTimeout)
 }
 
-// 通用计数操作处理函数
-func handleCountOp(countFunc func() int, expectedArgs int) commandHandler {
-	return func(parts []string, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
-		if len(parts) != expectedArgs {
-			conn.Write([]byte("ERR invalid " + parts[0] + " command\n"))
-			return
-		}
-
-		value := countFunc()
-		str := strconv.Itoa(value)
-		if len(str) != 0 {
-			conn.Write([]byte(str + "\n"))
-		} else {
-			conn.Write([]byte("nil\n"))
-		}
-	}
-}
-
-// 带除数的计数操作处理函数（用于RBTree）
-// func handleCountOpWithDivisor(countFunc func() int, expectedArgs int, divisor int) commandHandler {
-// 	return func(parts []string, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
-// 		if len(parts) != expectedArgs {
-// 			conn.Write([]byte("ERR invalid " + parts[0] + " command\n"))
-// 			return
-// 		}
-
-// 		value := countFunc()
-// 		str := strconv.Itoa(value)
-// 		if len(str) != 0 {
-// 			conn.Write([]byte(str + "\n"))
-// 		} else {
-// 			conn.Write([]byte("nil\n"))
-// 		}
-// 	}
-// }
-
-// 存在性检查操作处理函数
-func handleExistOp(existFunc func(string) int, expectedArgs int) commandHandler {
-	return func(parts []string, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
-		if len(parts) != expectedArgs {
-			conn.Write([]byte("ERR invalid " + parts[0] + " command\n"))
-			return
-		}
-
-		ret := existFunc(parts[1])
-		if ret == 0 {
-			conn.Write([]byte("Exist\n"))
-		} else {
-			conn.Write([]byte("nil\n"))
-		}
-	}
-}
-
-// Leader命令处理函数
-func handleLeaderCommand(parts []string, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
-	currentTerm, isLeader := kv.GetRaft().GetState()
-	fmt.Printf("当前状态: %v, 当前任期: %d\n", isLeader, currentTerm)
-	if isLeader {
-		conn.Write([]byte("isLeader\n"))
-	} else {
-		conn.Write([]byte("isCluster\n"))
-	}
-}
-
-// Num命令处理函数
-func handleNumCommand(parts []string, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
-	num := kv.GetSetCounter()
-	str := strconv.FormatInt(num, 10)
-	conn.Write([]byte(str + "\n"))
-}
-
+// handleConnection processes TCP connections
 func handleConnection(kv *server.KVServer, conn net.Conn) {
 	rf := kv.GetRaft()
+	// 创建退出通道用于超时goroutine
 	quitCh := make(chan struct{})
 	defer func() {
 		fmt.Printf("Closing connection from %s\n", conn.RemoteAddr())
+		// 重试3次清空缓冲区，确保所有数据都被提交
 		for i := 0; i < 3; i++ {
 			flushBatch(kv, conn, rf)
 			time.Sleep(10 * time.Millisecond)
 		}
-		close(quitCh)
+		close(quitCh) // 通知超时goroutine退出
 		batchMutex.Lock()
-		delete(batchBufferMap, conn)
+		delete(batchBufferMap, conn) // 移除连接对应的缓冲区，避免内存泄漏
 		batchMutex.Unlock()
 		conn.Close()
 	}()
 	reader := bufio.NewReader(conn)
 
+	// Start a timer for this connection
 	timer := time.NewTimer(batchTimeout)
 	defer timer.Stop()
 
+	// Goroutine to handle batch timeouts
 	go func() {
 		for {
 			select {
@@ -316,7 +175,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				flushBatch(kv, conn, rf)
 				timer.Reset(batchTimeout)
 			case <-quitCh:
-				return
+				return // 收到退出信号，结束goroutine
 			}
 		}
 	}()
@@ -344,9 +203,269 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 		}
 
 		action := strings.ToUpper(parts[0])
-		if handler, exists := commandHandlers[action]; exists {
-			handler(parts, conn, kv, rf, timer)
-		} else {
+		switch action {
+		// Array
+		case "SET":
+			if len(parts) != 3 {
+				conn.Write([]byte("Invalid SET command\n"))
+				continue
+			}
+			Commited(server.Set, parts[1], parts[2], conn, kv, rf, timer)
+
+		case "GET":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid GET command\n"))
+				continue
+			}
+			value := bridge.Array_Get(parts[1])
+			if len(value) != 0 {
+				conn.Write([]byte(value + "\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		case "COUNT":
+			if len(parts) != 1 {
+				conn.Write([]byte("ERR invalid COUNT command\n"))
+				continue
+			}
+			value := bridge.Array_Count()
+
+			str := strconv.Itoa(value)
+			if len(str) != 0 {
+				conn.Write([]byte(str + "\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		case "DELETE":
+			if len(parts) != 2 {
+				conn.Write([]byte("Invalid DELETE command\n"))
+				continue
+			}
+			Commited(server.Delete, parts[1], parts[1], conn, kv, rf, timer)
+
+		case "EXIST":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid EXIST command\n"))
+				continue
+			}
+			ret := bridge.Array_Exist(parts[1])
+			if ret == 0 {
+				conn.Write([]byte("Exist\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+
+		// Hash
+		case "HSET":
+			if len(parts) != 3 {
+				conn.Write([]byte("Invalid HSET command\n"))
+				continue
+			}
+			Commited(server.HSet, parts[1], parts[2], conn, kv, rf, timer)
+
+		case "HGET":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid HGET command\n"))
+				continue
+			}
+			value := bridge.Hash_Get(parts[1])
+			if len(value) != 0 {
+				conn.Write([]byte(value + "\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		case "HCOUNT":
+			if len(parts) != 1 {
+				conn.Write([]byte("ERR invalid HCOUNT command\n"))
+				continue
+			}
+			value := bridge.Hash_Count()
+			str := strconv.Itoa(value)
+			if len(str) != 0 {
+				conn.Write([]byte(str + "\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		case "HDELETE":
+			if len(parts) != 2 {
+				conn.Write([]byte("Invalid HDELETE command\n"))
+				continue
+			}
+			Commited(server.HDelete, parts[1], parts[1], conn, kv, rf, timer)
+
+		case "HEXIST":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid HEXIST command\n"))
+				continue
+			}
+			ret := bridge.Hash_Exist(parts[1])
+			if ret == 0 {
+				conn.Write([]byte("Exist\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		// RBTree
+		case "RSET":
+			if len(parts) != 3 {
+				conn.Write([]byte("Invalid RSET command\n"))
+				continue
+			}
+			Commited(server.RSet, parts[1], parts[2], conn, kv, rf, timer)
+
+		case "RGET":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid RGET command\n"))
+				continue
+			}
+			value := bridge.RB_Get(parts[1])
+			if len(value) != 0 {
+				conn.Write([]byte(value + "\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		case "RCOUNT":
+			if len(parts) != 1 {
+				conn.Write([]byte("ERR invalid RCOUNT command\n"))
+				continue
+			}
+			value := bridge.RB_Count() / 3
+			str := strconv.Itoa(value)
+			if len(str) != 0 {
+				conn.Write([]byte(str + "\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		case "RDELETE":
+			if len(parts) != 2 {
+				conn.Write([]byte("Invalid RDELETE command\n"))
+				continue
+			}
+			Commited(server.Delete, parts[1], parts[1], conn, kv, rf, timer)
+
+		case "REXIST":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid REXIST command\n"))
+				continue
+			}
+			ret := bridge.RB_Exist(parts[1])
+			if ret == 0 {
+				conn.Write([]byte("Exist\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+
+		// BTree
+		case "BSET":
+			if len(parts) != 3 {
+				conn.Write([]byte("Invalid BSET command\n"))
+				continue
+			}
+			Commited(server.BSet, parts[1], parts[2], conn, kv, rf, timer)
+
+		case "BGET":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid BGET command\n"))
+				continue
+			}
+			value := bridge.BTree_Get(parts[1])
+			if len(value) != 0 {
+				conn.Write([]byte(value + "\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		case "BCOUNT":
+			if len(parts) != 1 {
+				conn.Write([]byte("ERR invalid BCOUNT command\n"))
+				continue
+			}
+			value := bridge.BTree_Count()
+			str := strconv.Itoa(value)
+			if len(str) != 0 {
+				conn.Write([]byte(str + "\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		case "BDELETE":
+			if len(parts) != 2 {
+				conn.Write([]byte("Invalid BDELETE command\n"))
+				continue
+			}
+			Commited(server.BDelete, parts[1], parts[1], conn, kv, rf, timer)
+
+		case "BEXIST":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid BEXIST command\n"))
+				continue
+			}
+			ret := bridge.BTree_Exist(parts[1])
+			if ret == 0 {
+				conn.Write([]byte("Exist\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		//Skiplist
+		case "ZSET":
+			if len(parts) != 3 {
+				conn.Write([]byte("Invalid ZSET command\n"))
+				continue
+			}
+			Commited(server.ZSet, parts[1], parts[2], conn, kv, rf, timer)
+
+		case "ZGET":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid ZGET command\n"))
+				continue
+			}
+			value := bridge.Skiplist_Get(parts[1])
+			if len(value) != 0 {
+				conn.Write([]byte(value + "\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		case "ZCOUNT":
+			if len(parts) != 1 {
+				conn.Write([]byte("ERR invalid ZCOUNT command\n"))
+				continue
+			}
+			value := bridge.Skiplist_Count()
+
+			str := strconv.Itoa(value)
+			if len(str) != 0 {
+				conn.Write([]byte(str + "\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		case "ZDELETE":
+			if len(parts) != 2 {
+				conn.Write([]byte("Invalid ZDELETE command\n"))
+				continue
+			}
+			Commited(server.ZDelete, parts[1], parts[1], conn, kv, rf, timer)
+
+		case "ZEXIST":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid ZEXIST command\n"))
+				continue
+			}
+			ret := bridge.Skiplist_Exist(parts[1])
+			if ret == 0 {
+				conn.Write([]byte("Exist\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		case "LEADER":
+			currentTerm, isLeader := kv.GetRaft().GetState()
+			fmt.Printf("当前状态: %v, 当前任期: %d\n", isLeader, currentTerm)
+			if isLeader {
+				conn.Write([]byte("isLeader\n"))
+			} else {
+				conn.Write([]byte("isCluster\n"))
+			}
+		case "NUM":
+			num := kv.GetSetCounter()
+			str := strconv.FormatInt(num, 10)
+			conn.Write([]byte(str + "\n"))
+		default:
 			conn.Write([]byte("Unknown command\n"))
 		}
 	}
