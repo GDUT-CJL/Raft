@@ -140,23 +140,23 @@ func (kv *KVServer) applyToStateMachine(op Op) *OpReply {
 		value = bridge.Hash_Count()
 
 	case RSet:
-		err = bridge.RB_Set(op.Key, op.Value)
+		err = bridge.RB_Set(op.Key, op.Klen, op.Value, op.Vlen)
 	case RDelete:
-		err = bridge.RB_Delete(op.Key)
+		err = bridge.RB_Delete(op.Key, op.Klen)
 	case RCount:
 		value = bridge.RB_Count()
 
 	case BSet:
-		err = bridge.BTree_Set(op.Key, op.Value)
+		err = bridge.BTree_Set(op.Key, op.Klen, op.Value, op.Vlen)
 	case BDelete:
-		err = bridge.BTree_Delete(op.Key)
+		err = bridge.BTree_Delete(op.Key, op.Klen)
 	case BCount:
 		value = bridge.BTree_Count()
 
 	case ZSet:
-		err = bridge.Skiplist_Set(op.Key, op.Value)
+		err = bridge.Skiplist_Set(op.Key, op.Klen, op.Value, op.Vlen)
 	case ZDelete:
-		err = bridge.Skiplist_Delete(op.Key)
+		err = bridge.Skiplist_Delete(op.Key, op.Klen)
 	case ZCount:
 		value = bridge.Skiplist_Count()
 	default:

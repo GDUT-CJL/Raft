@@ -1,31 +1,18 @@
 #include "storage.h"
 
-static skipnode_t* _createNode(char* key, char* value, int level) {
-    if (key == NULL || value == NULL || level < 0) return NULL;
+static skipnode_t* _createNode(bstring_t* key, bstring_t* value, int level) {
+    if (bstring_empty(key) || bstring_empty(value) || level < 0) return NULL;
 
     skipnode_t* node = (skipnode_t*)kvs_malloc(sizeof(skipnode_t));
     if (node == NULL) return NULL;
 
-    node->key = (char*)kvs_malloc(strlen(key) + 1);
-    if (node->key == NULL) {
-        kvs_free(node);
-        return NULL;
-    }
-
-    node->value = (char*)kvs_malloc(strlen(value) + 1);
-    if (node->value == NULL) {
-        kvs_free(node->key);
-        kvs_free(node);
-        return NULL;
-    }
-
-    strncpy(node->key, key, strlen(key) + 1);
-    strncpy(node->value, value, strlen(value) + 1);
+    node->key = key;
+    node->value = value;
 
     node->next = (skipnode_t**)kvs_malloc(sizeof(skipnode_t*) * level);
     if (node->next == NULL) {
-        kvs_free(node->key);
-        kvs_free(node->value);
+        bstring_free(node->key);
+        bstring_free(node->value);
         kvs_free(node);
         return NULL;
     }
@@ -114,17 +101,17 @@ int dest_skiplist(){
     return 0;
 }
 
-skipnode_t* kvs_skiplist_search(char* key){
-    if(key == NULL || sklist == NULL || sklist->head == NULL)     return NULL;
+skipnode_t* kvs_skiplist_search(bstring_t* key){
+    if(bstring_empty(key) || sklist == NULL || sklist->head == NULL)     return NULL;
     int levelIndex = sklist->cur_level - 1;
     int i;
     skipnode_t* cur = sklist->head;
     for(i = levelIndex; i >=0; --i){
-        while(cur->next[i] != NULL && strcmp(cur->next[i]->key,key) < 0){
+        while(cur->next[i] != NULL && bstring_compare(cur->next[i]->key,key) < 0){
             cur = cur->next[i];
         }
     }
-    if(cur->next[0] != NULL && strcmp(cur->next[0]->key,key) == 0){
+    if(cur->next[0] != NULL && bstring_compare(cur->next[0]->key,key) == 0){
         return cur->next[0];
     }
     else{
@@ -132,20 +119,25 @@ skipnode_t* kvs_skiplist_search(char* key){
     }
 }
 
-int zset(char* key, char* value){
-    // 寻找新节点应该插入的位置
+int zset(char* key,size_t klen, char* value,size_t vlen){
+     // 找到每一层上应该插入新节点的前驱节点
+    bstring_t* bkey = bstring_new_from_data(key,klen);
+    bstring_t* bvalue = bstring_new_from_data(value,vlen);
     skipnode_t* update[sklist->max_level];  // 查找的路径
     skipnode_t* p = sklist->head;
+    // 从高层到低层，逐步找到新节点应插入的前驱位置。
     for(int i=sklist->cur_level-1; i>=0; i--){
-        while(p->next[i] != NULL && strcmp(p->next[i]->key, key)<0){
+        while(p->next[i] != NULL && bstring_compare(p->next[i]->key, bkey)<0){
             p = p->next[i];
         }
         update[i] = p;
     }
     // 将节点插入
-    if(p->next[0]!=NULL && strcmp(p->next[0]->key, key)==0)
+    if(p->next[0]!=NULL && bstring_compare(p->next[0]->key, bkey)==0)//检查是否已存在相同键
     {
-        return -2;  // already have same key
+        p->next[0]->value = bvalue;
+        //strncpy(p->next[0]->value, value,strlen(value));
+        return 0;  // already have same key
     }else{
         // 新节点的层数--概率0.5
         int newlevel = 1;
@@ -153,14 +145,14 @@ int zset(char* key, char* value){
             ++newlevel;
         }
         // 创建新节点
-        skipnode_t* new_node = _createNode(key, value, newlevel);
+        skipnode_t* new_node = _createNode(bkey, bvalue, newlevel);
         if(new_node == NULL) return -1;
         // 完善当前层级之上的查找路径（也就是头节点）
-        if(newlevel > sklist->cur_level){
+        if(newlevel > sklist->cur_level){// 如果新节点层级高于现有最大层
             for(int i=sklist->cur_level; i<newlevel; i++){
                 update[i] = sklist->head;
             }
-            sklist->cur_level = newlevel;
+            sklist->cur_level = newlevel;//更新update[]数组，对应上层指向头节点，提升sklist->cur_level。
         }
         // 更新新节点的前后指向
         for(int i=0; i < newlevel; i++){
@@ -172,11 +164,13 @@ int zset(char* key, char* value){
     }
 }
 
-char* zget(char* key){
+uint8_t* zget(char* key,size_t klen,size_t* out_vlen){
     if(key==NULL || sklist==NULL) return NULL;
-    skipnode_t* node = kvs_skiplist_search(key);
+    bstring_t* bkey = bstring_new_from_data(key,klen);
+    skipnode_t* node = kvs_skiplist_search(bkey);
     if(node != NULL){
-        return node->value;
+        *out_vlen = node->value->len;
+        return node->value->data;
     }else{
         return NULL;
     }
@@ -184,19 +178,21 @@ char* zget(char* key){
 
 // 删除元素
 // 返回值：0成功，-1失败，-2没有
-int zdelete(char* key){
+int zdelete(char* key,size_t klen){
     // 查找节点
+    if(key == NULL) return -1;
+    bstring_t* bkey = bstring_new_from_data(key,klen);
     skipnode_t* update[sklist->max_level];
     skipnode_t* p = sklist->head;
     for(int i=sklist->cur_level-1; i>=0; i--){
-        while(p->next[i]!=NULL && strcmp(p->next[i]->key, key)<0)
+        while(p->next[i]!=NULL && bstring_compare(p->next[i]->key, bkey)<0)
         {
             p = p->next[i];
         }
         update[i] = p;
     }
     // 删除节点并更新指向信息
-    if(p->next[0]!=NULL && strcmp(p->next[0]->key, key)==0)
+    if(p->next[0]!=NULL && bstring_compare(p->next[0]->key, bkey)==0)
     {
         skipnode_t* node_d = p->next[0];  // 待删除元素
         for(int i=0; i<sklist->cur_level; i++){
@@ -225,8 +221,9 @@ int zcount(){
     return sklist->nodeNum;
 }
 
-int zexist(char* key){
-    if(kvs_skiplist_search(key) == NULL){
+int zexist(char* key,size_t klen){
+    bstring_t* bkey = bstring_new_from_data(key,klen);
+    if(kvs_skiplist_search(bkey) == NULL){
         return -1;
     }
     return 0;

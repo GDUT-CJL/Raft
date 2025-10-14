@@ -1,9 +1,5 @@
 // https://github.com/jjejdhhd/kv-store/tree/main/kv-store-v1/btree.c
-
 #include"storage.h"
-/*-----------------------------函数声明------------------------------*/
-
-
 /*-----------------------------函数定义------------------------------*/
 // 创建单个节点，leaf表示是否为叶子节点
 btree_node* btree_node_create(btree *T, int leaf){
@@ -74,8 +70,8 @@ int btree_init(int m) {
     }  
 
     // 初始化根节点字段  
-    kv_b->root_node->keys = (char**)kvs_malloc(sizeof(char**) * (m - 1)); // 分配键的内存  
-    kv_b->root_node->values = (char**)kvs_malloc(sizeof(char**) * (m - 1)); // 分配值的内存  
+    kv_b->root_node->keys = (bstring_t**)kvs_malloc(sizeof(bstring_t**) * (m - 1)); // 分配键的内存  
+    kv_b->root_node->values = (bstring_t**)kvs_malloc(sizeof(bstring_t**) * (m - 1)); // 分配值的内存  
     kv_b->root_node->children = (btree_node**)kvs_malloc(sizeof(btree_node*) * m); // 分配子节点的内存  
     
     // 检查内存分配  
@@ -199,31 +195,20 @@ btree_node* btree_child_split(btree *T, btree_node* cur, int idx){
 
 // btree插入元素：先分裂，再插入，必然在叶子节点插入
 // 返回值：0表示成功、-1表示失败、-2表示已经有key
-int btree_insert_key(B_KEY_SUB_TYPE key, B_VALUE_SUB_TYPE value){
+int btree_insert_key(char* key,size_t klen, char* value,size_t vlen){
     btree_node *cur = kv_b->root_node;
     if(key == NULL || value == NULL){
 
         // printf("illegal insert: key=%s, value=%s\n", key, value);
         return -1;
     }
-
+    bstring_t* bkey = bstring_new_from_data(key,klen);
+    bstring_t* bvalue = bstring_new_from_data(value,vlen);
     if(cur == NULL){
 
         btree_node *new = btree_node_create(kv_b, 1);
-        // 复制key
-        char* kcopy = (char*)kvs_malloc(strlen(key)+1);
-        if(kcopy == NULL) return -1;
-        strncpy(kcopy, key, strlen(key)+1);
-        // 复制value
-        char* vcopy = (char*)kvs_malloc(strlen(value)+1);
-        if(vcopy == NULL){
-            kvs_free(kcopy);
-            kcopy = NULL;
-            return -1;
-        }
-        strncpy(vcopy, value, strlen(value)+1);
-        new->keys[0] = kcopy;
-        new->values[0] = vcopy;
+        new->keys[0] = bkey;
+        new->values[0] = bvalue;
         new->num = 1;
         kv_b->root_node = new;
         kv_b->count++;
@@ -241,10 +226,10 @@ int btree_insert_key(B_KEY_SUB_TYPE key, B_VALUE_SUB_TYPE value){
             int next_idx = 0;  // 要进入的孩子节点的索引
             int i = 0;
             for(i=0; i<cur->num; i++){
-                if(strcmp(key, cur->keys[i]) == 0){
+                if(bstring_compare(bkey, cur->keys[i]) == 0){
                     // printf("insert failed! already has key=%d!\n", key);
                     return -2;
-                }else if(strcmp(key, cur->keys[i]) < 0){
+                }else if(bstring_compare(bkey, cur->keys[i]) < 0){
                     next_idx = i;
                     break;
                 }else if(i == cur->num-1){
@@ -263,10 +248,10 @@ int btree_insert_key(B_KEY_SUB_TYPE key, B_VALUE_SUB_TYPE value){
         int i = 0;
         int pos = 0;  // 要插入的位置
         for(i=0; i<cur->num; i++){
-            if(strcmp(key, cur->keys[i]) == 0){
+            if(bstring_compare(bkey, cur->keys[i]) == 0){
                 // printf("insert failed! already has key=%d!\n", key);
                 return -2;
-            }else if(strcmp(key, cur->keys[i]) < 0){
+            }else if(bstring_compare(bkey, cur->keys[i]) < 0){
                 pos = i;
                 break;
             }else if(i == cur->num-1){
@@ -274,28 +259,16 @@ int btree_insert_key(B_KEY_SUB_TYPE key, B_VALUE_SUB_TYPE value){
             }
         }
         // 插入元素
-        // 复制key
-        char* kcopy = (char*)kvs_malloc(strlen(key)+1);
-        if(kcopy == NULL) return -1;
-        strncpy(kcopy, key, strlen(key)+1);
-        // 复制value
-        char* vcopy = (char*)kvs_malloc(strlen(value)+1);
-        if(vcopy == NULL){
-            kvs_free(kcopy);
-            kcopy = NULL;
-            return -1;
-        }
-        strncpy(vcopy, value, strlen(value)+1);
         if(pos == cur->num){
-            cur->keys[cur->num] = kcopy;
-            cur->values[cur->num] = vcopy;
+            cur->keys[cur->num] = bkey;
+            cur->values[cur->num] = bvalue;
         }else{
             for(i=cur->num; i>pos; i--){
                 cur->keys[i] = cur->keys[i-1];
                 cur->values[i] = cur->values[i-1];
             }
-            cur->keys[pos] = kcopy;
-            cur->values[pos] = vcopy;
+            cur->keys[pos] = bkey;
+            cur->values[pos] = bvalue;
         }
         kv_b->count++;
         cur->num++;
@@ -432,18 +405,18 @@ int btree_delete_key(btree *T, B_KEY_SUB_TYPE key) {
             int idx_next = 0; // 下一个要去的孩子节点索引
             int idx_bro = 0;
             int idx_key = 0;
-            if (strcmp(key, cur->keys[0]) < 0)
+            if (bstring_compare(key, cur->keys[0]) < 0)
             {
                 idx_next = 0;
                 idx_bro = 1;
             }
-            else if (strcmp(key, cur->keys[cur->num - 1]) > 0)
+            else if (bstring_compare(key, cur->keys[cur->num - 1]) > 0)
             {
                 idx_next = cur->num;
                 idx_bro = cur->num - 1;
             } else {
                 for (int i = 0; i < cur->num; i++) {
-                    if (strcmp(key, cur->keys[i]) == 0)
+                    if (bstring_compare(key, cur->keys[i]) == 0)
                     {
                         // 哪边少去哪边
                         if (cur->children[i]->num <= cur->children[i + 1]->num) {
@@ -455,7 +428,7 @@ int btree_delete_key(btree *T, B_KEY_SUB_TYPE key) {
                         }
                         break;
                     }
-                    else if ((i < cur->num - 1) && (strcmp(key, cur->keys[i]) > 0) && (strcmp(key, cur->keys[i + 1]) < 0))
+                    else if ((i < cur->num - 1) && (bstring_compare(key, cur->keys[i]) > 0) && (bstring_compare(key, cur->keys[i + 1]) < 0))
                     {
                         idx_next = i + 1;
                         // 谁多谁是兄弟
@@ -480,7 +453,7 @@ int btree_delete_key(btree *T, B_KEY_SUB_TYPE key) {
                     cur = btree_merge(T, cur, idx_key);
                 }
             }
-            else if (strcmp(cur->keys[idx_key], key) == 0)
+            else if (bstring_compare(cur->keys[idx_key], key) == 0)
             {
                 // 若当前元素就是要删除的节点，那一定要送下去
                 // 但是不能借位,而是将前驱元素搬上来
@@ -515,7 +488,7 @@ int btree_delete_key(btree *T, B_KEY_SUB_TYPE key) {
         }
         // 叶子节点删除元素
         for (int i = 0; i < cur->num; i++) {
-            if (strcmp(cur->keys[i], key) == 0)
+            if (bstring_compare(cur->keys[i], key) == 0)
             {
                 if (cur->num == 1 && T->root_node != NULL) {
                     // 若B树只剩最后一个元素
@@ -552,7 +525,7 @@ void btree_node_print(btree_node *cur){
     }else{
         printf("leaf:%d, num:%d, key:|", cur->leaf, cur->num);
         for(int i=0; i<cur->num; i++){
-            printf("%s|", cur->keys[i]);
+            printf("%s|", cur->keys[i]->data);
         }
         printf("\n");
     }
@@ -582,36 +555,42 @@ void btree_traversal(btree *T){
 }
 
 btree_node* btree_search_key(btree *T, B_KEY_SUB_TYPE key){
-	if (key == NULL) {   
+    if (key == NULL || T == NULL || T->root_node == NULL) {   
         return NULL;  
     }  
-    else if(key != NULL){
-        btree_node *cur = T->root_node;
-        // 先寻找是否为非叶子节点
-        while(cur->leaf == 0){
-            if(strcmp(key, cur->keys[0]) < 0){
-                cur = cur->children[0];
-            }else if(strcmp(key, cur->keys[cur->num-1]) > 0){
-                cur = cur->children[cur->num];
-            }else{
-                for(int i=0; i<cur->num; i++){
-                    if(strcmp(cur->keys[i], key) == 0){
-                        return cur;
-                    }else if((i<cur->num-1) && (strcmp(key,cur->keys[i])>0) && (strcmp(key,cur->keys[i+1])<0)){
-                        cur = cur->children[i+1];
-                    }
+    
+    btree_node *cur = T->root_node;
+    
+    // 先寻找是否为非叶子节点
+    while(cur != NULL && cur->leaf == 0){  // 添加 cur != NULL 检查
+        if(bstring_compare(key, cur->keys[0]) < 0){
+            cur = cur->children[0];
+        }else if(bstring_compare(key, cur->keys[cur->num-1]) > 0){
+            cur = cur->children[cur->num];
+        }else{
+            int found = 0;
+            for(int i=0; i<cur->num; i++){
+                if(bstring_compare(cur->keys[i], key) == 0){
+                    return cur;
+                }else if((i<cur->num-1) && (bstring_compare(key,cur->keys[i])>0) && (bstring_compare(key,cur->keys[i+1])<0)){
+                    cur = cur->children[i+1];
+                    found = 1;
+                    break;
                 }
             }
+            if (!found) break;
         }
-        // 在寻找是否为叶子节点
-        if(cur->leaf == 1){
-            for(int i=0; i<cur->num; i++){
-                if(strcmp(cur->keys[i],key) == 0){
-                    return cur;
-                }
+    }
+    
+    // 在寻找是否为叶子节点
+    if(cur != NULL && cur->leaf == 1){  // 添加 cur != NULL 检查
+        for(int i=0; i<cur->num; i++){
+            if(bstring_compare(cur->keys[i],key) == 0){
+                return cur;
             }
         }
     }
+    
     // 都没找到返回NULL
     return NULL;
 }
@@ -643,26 +622,36 @@ int dest_btree(){
 }
 // 插入指令：有就报错，没有就创建
 // 返回值：0表示成功、-1表示失败、-2表示已经有key
-int bset(char* key,char* value){
-    return btree_insert_key(key, value);
+int bset(char* key,size_t klen,char* value,size_t vlen){
+    return btree_insert_key(key,klen, value,vlen);
 }
 // 查找指令
 // 返回值：正常返回node，NULL表示没有
-char* bget(char* key){
-    btree_node* node = btree_search_key(kv_b, key);
+uint8_t* bget(char* key,size_t klen,size_t* out_len){
+    bstring_t* bkey = bstring_new_from_data(key,klen);
+    btree_node* node = btree_search_key(kv_b, bkey);
+    uint8_t* result = NULL;
+    
     if(node != NULL){
         for(int i=0; i<node->num; i++){
-            if(strcmp(node->keys[i],key) == 0){
-                return node->values[i];
+            if(bstring_compare(node->keys[i],bkey) == 0){
+                *out_len = node->values[i]->len;
+                result = node->values[i]->data;
+                break;
             }
         }
     }
-    return NULL;
+    
+    bstring_free(bkey); // 释放bkey
+    return result;
 }
 // 删除指令
 // 返回值：0成功，-1失败，-2没有
-int bdelete(char* key){
-    return btree_delete_key(kv_b, key);
+int bdelete(char* key,size_t klen){
+    bstring_t* bkey = bstring_new_from_data(key,klen);
+    int ret = btree_delete_key(kv_b, bkey);
+    bstring_free(bkey); // 释放bkey
+    return ret;
 }
 // 计数指令
 int bcount(){
@@ -670,10 +659,19 @@ int bcount(){
 }
 // 存在指令
 // 返回值：0成功
-int bexist(char* key){
-    btree_node* node = btree_search_key(kv_b, key);
-	if(node == NULL){
-		return 1;
-	}
-	return 0;
+int bexist(char* key,size_t klen){
+    if(key == NULL || kv_b == NULL) return 1;
+    
+    bstring_t* bkey = bstring_new_from_data(key,klen);
+    if(bkey == NULL) {
+        return 1;
+    }
+    
+    btree_node* node = btree_search_key(kv_b, bkey);
+    bstring_free(bkey);
+    
+    if(node == NULL){
+        return 1;
+    }
+    return 0;
 }

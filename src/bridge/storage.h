@@ -115,8 +115,8 @@ int hcount();
 typedef enum { RED, BLACK } Color;
 // 红黑树节点结构
 typedef struct RBNode {
-    char* key;
-    char* value;
+    bstring_t* key;
+    bstring_t* value;
     Color color;
     struct RBNode *left;
     struct RBNode *right;
@@ -127,17 +127,16 @@ RBNode *NIL;
 RBNode* root;
 int init_rbtree();
 void dest_rbtree();
-int rexist(const char* key);
-int rset(char* key,char* value);
-char* rget(const char* key);
-int rdelete(char* key);
+int rexist(const char* key,size_t klen);
+int rset(char* key,size_t klen,char* value,size_t vlen);
+uint8_t* rget(const char* key,size_t klen,size_t* out_len);
+int rdelete(char* key,size_t klen);
 int rcount();
 /*------------------------------ BTree --------------------------------------*/
-// 定义键值对的类型
-    typedef char** B_KEY_TYPE;    // key类型
-    typedef char** B_VALUE_TYPE;  // value类型
-    typedef char*  B_KEY_SUB_TYPE;   // key的实际类型
-    typedef char*  B_VALUE_SUB_TYPE; // value的实际类型
+typedef bstring_t** B_KEY_TYPE;    // key类型
+typedef bstring_t** B_VALUE_TYPE;  // value类型
+typedef bstring_t*  B_KEY_SUB_TYPE;   // key的实际类型
+typedef bstring_t*  B_VALUE_SUB_TYPE; // value的实际类型
 
 typedef struct _btree_node{
     B_KEY_TYPE keys;
@@ -156,21 +155,20 @@ typedef struct _btree{
 }btree;
 typedef btree kv_btree_t;
 kv_btree_t* kv_b;
-int btree_insert_key(char* key, char* value);
+int btree_insert_key(char* key,size_t klen, char* value,size_t vlen);
 int init_btree(int m);
 int dest_btree();
-int bset(char* key,char* value);
-char* bget(char *key);
-int bdelete(char* key);
+int bset(char* key,size_t klen,char* value,size_t vlen);
+uint8_t* bget(char *key,size_t klen,size_t* out_len);
+int bdelete(char* key,size_t klen);
 int bcount();
-int bexist(char* key);
+int bexist(char* key,size_t klen);
 int btree_destroy(btree *T);
-
 /*------------------------------ Skiplist --------------------------------------*/
 #define     SKIPTABLE_MAX_LEVEL     5
 typedef struct skipnode_s{
-    char* key;
-    char* value;
+    bstring_t* key;
+    bstring_t* value;
     struct skipnode_s** next;
 }skipnode_t;
 
@@ -183,11 +181,11 @@ typedef struct skiplist_s{
 skiplist_t* sklist;
 int init_skipTable();
 int dest_skiplist();
-int zset(char* key, char* value);
-char* zget(char* key);
-int zdelete(char* key);
+int zset(char* key, size_t klen,char* value,size_t vlen);
+uint8_t* zget(char* key,size_t klen,size_t* out_vlen);
+int zdelete(char* key,size_t klen);
 int zcount();
-int zexist(char* key);
+int zexist(char* key,size_t klen);
 
 
 #ifdef __cplusplus  

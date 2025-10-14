@@ -6,30 +6,14 @@ static void initNIL() {
     NIL->color = BLACK;
     NIL->left = NIL->right = NIL->parent = NULL;
 }
-
 // 创建新节点
-static RBNode* createNode(char* key,char* value) {
-    if(key == NULL || value == NULL) return NULL;
+static RBNode* createNode(bstring_t* key,bstring_t* value) {
+    if(bstring_empty(key) || bstring_empty(value)) return NULL;
 
     RBNode *node = (RBNode*)kvs_malloc(sizeof(RBNode));
     if(!node) return NULL;
-    node->key = (char*)kvs_malloc(strlen(key)+1);
-    if(!node->key) {
-        kvs_free(node);
-        return NULL;
-    }
-    node->value = (char*)kvs_malloc(strlen(value)+1);
-    if(!node->value){
-        kvs_free(node->key);
-        kvs_free(node);
-        return NULL;
-    }
-
-    strncpy(node->key, key, strlen(key)+1);
-
-    strncpy(node->value, value, strlen(value)+1);
-
-
+    node->key = key;
+    node->value = value;
     node->color = RED; // 新节点初始为红色
     node->left = node->right = node->parent = NIL;
     return node;
@@ -114,15 +98,17 @@ static void insertFixup(RBNode **root, RBNode *z) {
 }
 
 // 插入节点
-static int insert(RBNode **root, char* key, char* value) {
-    RBNode *z = createNode(key,value);
+static int insert(RBNode **root, char* key,size_t klen, char* value,size_t vlen) {
+    bstring_t* bkey = bstring_new_from_data(key,klen);
+    bstring_t* bvalue = bstring_new_from_data(value,vlen);
+    RBNode *z = createNode(bkey,bvalue);
     
     if(z == NULL) return -1;
     RBNode *y = NIL;
     RBNode *x = *root;
     while (x != NIL) {
         y = x;
-        if (strcmp(z->key,x->key) < 0) {
+        if (bstring_compare(z->key,x->key) < 0) {
             x = x->left;
         } else {
             x = x->right;
@@ -131,7 +117,7 @@ static int insert(RBNode **root, char* key, char* value) {
     z->parent = y;
     if (y == NIL) {
         *root = z;
-    } else if (strcmp(z->key,y->key) < 0) { 
+    } else if (bstring_compare(z->key,y->key) < 0) { 
         y->left = z;
     } else {
         y->right = z;
@@ -145,10 +131,11 @@ static int insert(RBNode **root, char* key, char* value) {
 }
 
 // 查找节点
-static RBNode* search(RBNode *root,const char* key) {
+static RBNode* search(RBNode *root,const char* key,size_t klen) {
     RBNode *current = root;
-    while (current != NIL && strcmp(current->key,key) != 0) {
-        if (strcmp(key,current->key) < 0) {
+    bstring_t* bkey = bstring_new_from_data(key,klen);
+    while (current != NIL && bstring_compare(current->key,bkey) != 0) {
+        if (bstring_compare(bkey,current->key) < 0) {
             current = current->left;
         } else {
             current = current->right;
@@ -222,8 +209,8 @@ static void deleteFixup(RBNode **root, RBNode *x) {
 }
 
 // 删除节点
-static int rb_delete(RBNode **root, char* key) {
-    RBNode *z = search(*root, key);
+static int rb_delete(RBNode **root, char* key,size_t klen) {
+    RBNode *z = search(*root, key,klen);
     if (z == NIL) return -1;
 
     RBNode *y = z;
@@ -288,27 +275,28 @@ static int rb_delete(RBNode **root, char* key) {
     return 0;
 }
 
-int rexist(const char* key){
+int rexist(const char* key,size_t klen){
     if(key == NULL) return -1;
-    RBNode* Node = search(root,key);
+    RBNode* Node = search(root,key,klen);
     if(Node->key == 0) return -1;
     return 0;
 }
-int rset(char* key,char* value){
+int rset(char* key,size_t klen,char* value,size_t vlen){
     if(key == NULL || value == NULL) return -1;
-    if(insert(&root,key,value) == -1) return -1;
+    if(insert(&root,key,klen,value,vlen) == -1) return -1;
 
     return 0;
 }
-char* rget(const char* key){
+uint8_t* rget(const char* key,size_t klen,size_t* out_len){
     if(key == NULL) return NULL;
-    RBNode* get = search(root,key);
+    RBNode* get = search(root,key,klen);
     if(get == NULL) return NULL;
-    return get->value;
+    *out_len = get->value->len;
+    return get->value->data;
 }
-int rdelete(char* key){
+int rdelete(char* key,size_t klen){
     if(key == NULL) return -1;
-    int ret = rb_delete(&root,key);
+    int ret = rb_delete(&root,key,klen);
     if(ret == 0) return 0;
     return -1;
 }

@@ -336,7 +336,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("ERR invalid RGET command\n"))
 				continue
 			}
-			value := bridge.RB_Get(parts[1])
+			value := bridge.RB_Get(parts[1], len(parts[1]))
 			if len(value) != 0 {
 				conn.Write([]byte(value + "\n"))
 			} else {
@@ -353,7 +353,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("ERR invalid RExist command\n"))
 				continue
 			}
-			ret := bridge.RB_Exist(parts[1])
+			ret := bridge.RB_Exist(parts[1], len(parts[1]))
 			if ret == 0 {
 				conn.Write([]byte("Exist\n"))
 			} else {
@@ -389,7 +389,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("ERR invalid BGET command\n"))
 				continue
 			}
-			value := bridge.BTree_Get(parts[1])
+			value := bridge.BTree_Get(parts[1], len(parts[1]))
 			if len(value) != 0 {
 				conn.Write([]byte(value + "\n"))
 			} else {
@@ -406,7 +406,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("ERR invalid BExist command\n"))
 				continue
 			}
-			ret := bridge.BTree_Exist(parts[1])
+			ret := bridge.BTree_Exist(parts[1], len(parts[1]))
 			if ret == 0 {
 				conn.Write([]byte("Exist\n"))
 			} else {
@@ -443,7 +443,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("ERR invalid ZGET command\n"))
 				continue
 			}
-			value := bridge.Skiplist_Get(parts[1])
+			value := bridge.Skiplist_Get(parts[1], len(parts[1]))
 			if len(value) != 0 {
 				conn.Write([]byte(value + "\n"))
 			} else {
@@ -460,7 +460,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("ERR invalid ZExist command\n"))
 				continue
 			}
-			ret := bridge.Skiplist_Exist(parts[1])
+			ret := bridge.Skiplist_Exist(parts[1], len(parts[1]))
 			if ret == 0 {
 				conn.Write([]byte("Exist\n"))
 			} else {
