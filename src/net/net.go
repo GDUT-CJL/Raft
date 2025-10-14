@@ -373,7 +373,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 			if _, _, isLeader := rf.Start(op); !isLeader {
 				conn.Write([]byte("is not leader\n")) // 不是leader节点不允许操作，强一致性
 			} else {
-				count := bridge.RB_Count() / rf.GetPeerLen()
+				count := bridge.RB_Count()
 				// int 转为 string
 				s := strconv.Itoa(count)
 				conn.Write([]byte(s + "\n"))

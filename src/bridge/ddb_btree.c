@@ -623,7 +623,23 @@ int dest_btree(){
 // 插入指令：有就报错，没有就创建
 // 返回值：0表示成功、-1表示失败、-2表示已经有key
 int bset(char* key,size_t klen,char* value,size_t vlen){
-    return btree_insert_key(key,klen, value,vlen);
+    if(bexist(key,klen) == 0){
+        bstring_t* bkey = bstring_new_from_data(key,klen);
+        bstring_t* bvalue = bstring_new_from_data(value,vlen);
+        btree_node* node = btree_search_key(kv_b,bkey);
+        if(node != NULL){
+            for(int i = 0; i < node->num; i++){
+                if(bstring_compare(node->keys[i], bkey) == 0){
+                    bstring_free(node->values[i]);
+                    node->values[i] = bvalue;
+                    return 0;
+                }
+            }
+        }
+        return -1;
+    }else{
+        return btree_insert_key(key,klen, value,vlen);   
+    }
 }
 // 查找指令
 // 返回值：正常返回node，NULL表示没有

@@ -108,7 +108,11 @@ static int insert(RBNode **root, char* key,size_t klen, char* value,size_t vlen)
     RBNode *x = *root;
     while (x != NIL) {
         y = x;
-        if (bstring_compare(z->key,x->key) < 0) {
+        if (bstring_compare(z->key,x->key) == 0){
+            x->value = z->value;
+            return 0;
+        }
+        else if(bstring_compare(z->key,x->key) < 0) {
             x = x->left;
         } else {
             x = x->right;
