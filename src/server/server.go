@@ -168,37 +168,37 @@ func (kv *KVServer) applyToStateMachine(op Op) *OpReply {
 	var err string
 	switch op.OpType {
 	case Set:
-		err = bridge.Array_Set(op.Key, op.Value)
+		err = bridge.Array_Set(op.Key, op.Klen, op.Value, op.Vlen)
 	case Delete:
-		err = bridge.Array_Delete(op.Key)
+		err = bridge.Array_Delete(op.Key, op.Klen)
 	case Count:
 		value = bridge.Array_Count()
 
 	case HSet:
-		err = bridge.Hash_Set(op.Key, op.Value)
+		err = bridge.Hash_Set(op.Key, op.Klen, op.Value, op.Vlen)
 	case HDelete:
-		err = bridge.Hash_Delete(op.Key)
+		err = bridge.Hash_Delete(op.Key, op.Klen)
 	case HCount:
 		value = bridge.Hash_Count()
 
 	case RSet:
-		err = bridge.RB_Set(op.Key, op.Value)
+		err = bridge.RB_Set(op.Key, op.Klen, op.Value, op.Vlen)
 	case RDelete:
-		err = bridge.RB_Delete(op.Key)
+		err = bridge.RB_Delete(op.Key, op.Vlen)
 	case RCount:
 		value = bridge.RB_Count()
 
 	case BSet:
-		err = bridge.BTree_Set(op.Key, op.Value)
+		err = bridge.BTree_Set(op.Key, op.Klen, op.Value, op.Vlen)
 	case BDelete:
-		err = bridge.BTree_Delete(op.Key)
+		err = bridge.BTree_Delete(op.Key, op.Klen)
 	case BCount:
 		value = bridge.BTree_Count()
 
 	case ZSet:
-		err = bridge.Skiplist_Set(op.Key, op.Value)
+		err = bridge.Skiplist_Set(op.Key, op.Klen, op.Value, op.Vlen)
 	case ZDelete:
-		err = bridge.Skiplist_Delete(op.Key)
+		err = bridge.Skiplist_Delete(op.Key, op.Klen)
 	case ZCount:
 		value = bridge.Skiplist_Count()
 

@@ -9,6 +9,7 @@ package bridge
 import "C"
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -26,6 +27,34 @@ var (
 	rocksdbLock  sync.RWMutex
 )
 
+// BinaryToPrintable 将二进制数据转义为可打印字符串
+func BinaryToPrintable(data []byte) string {
+	var builder strings.Builder
+	for _, b := range data {
+		switch b {
+		case 0:
+			builder.WriteString("\\0") // 或 "\\x00"
+		case '\n':
+			builder.WriteString("\\n")
+		case '\r':
+			builder.WriteString("\\r")
+		case '\t':
+			builder.WriteString("\\t")
+		case '\\':
+			builder.WriteString("\\\\")
+		case '"':
+			builder.WriteString("\\\"")
+		default:
+			if b >= 32 && b <= 126 { // 可打印 ASCII
+				builder.WriteByte(b)
+			} else {
+				// 不可打印字符用 \xXX 表示
+				builder.WriteString(fmt.Sprintf("\\x%02x", b))
+			}
+		}
+	}
+	return builder.String()
+}
 func InitMemPool() {
 	C.initPool()
 }
@@ -47,30 +76,40 @@ func DestoryStorage() {
 }
 
 // ----------------------------Array------------------------------------- //
-var arrayCounter int64 // 原子计数器
-func Array_Set(key, value string) string {
+func Array_Set(key string, klen int, value string, vlen int) string {
 	cKey := C.CString(key)
 	cValue := C.CString(value)
-	defer C.kvs_free(unsafe.Pointer(cKey))
-	defer C.kvs_free(unsafe.Pointer(cValue))
-
-	if ret := C.set(cKey, cValue); ret == 0 {
+	cKlen := C.size_t(klen)
+	cVlen := C.size_t(vlen)
+	defer C.free(unsafe.Pointer(cKey))
+	defer C.free(unsafe.Pointer(cValue))
+	ret := C.set(cKey, cKlen, cValue, cVlen)
+	if ret == 0 {
 		return "OK"
 	}
-	return "FAILED"
+	return "FALIED"
 }
 
-func Array_Get(key string) string {
+func Array_Get(key string, klen int) string {
 	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey))
-	cValue := C.get(cKey)
-	return C.GoString(cValue)
+	defer C.free(unsafe.Pointer(cKey))
+
+	var cVlen C.size_t
+	cValue := C.get(cKey, C.size_t(klen), &cVlen)
+
+	if cValue == nil || cVlen == 0 {
+		return "" // 或返回错误
+	}
+	// ✅ 使用 GoBytes 安全转换任意二进制数据
+	goBytes := C.GoBytes(unsafe.Pointer(cValue), C.int(cVlen))
+	return BinaryToPrintable(goBytes)
 }
 
-func Array_Delete(key string) string {
+func Array_Delete(key string, klen int) string {
 	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey)) // 释放 C 字符串
-	cRet := C.delete(cKey)
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	cRet := C.delete(cKey, cKlen)
 	if cRet == 0 {
 		return "OK"
 	}
@@ -81,38 +120,46 @@ func Array_Count() int {
 	return int(C.count())
 }
 
-func Array_Exist(key string) int {
+func Array_Exist(key string, klen int) int {
 	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey)) // 释放 C 字符串
-	ret := C.exist(cKey)
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	ret := C.exist(cKey, cKlen)
 	return int(ret)
 }
 
 // ----------------------------Hash------------------------------------- //
-func Hash_Set(key, value string) string {
+func Hash_Set(key string, klen int, value string, vlen int) string {
 	cKey := C.CString(key)
 	cValue := C.CString(value)
-	defer C.kvs_free(unsafe.Pointer(cKey))
-	defer C.kvs_free(unsafe.Pointer(cValue))
-	ret := C.hset(cKey, cValue)
+	cKlen := C.size_t(klen)
+	cVlen := C.size_t(vlen)
+	defer C.free(unsafe.Pointer(cKey))
+	defer C.free(unsafe.Pointer(cValue))
+	ret := C.hset(cKey, cKlen, cValue, cVlen)
 	if ret == 0 {
 		return "OK"
 	}
 	return "FALIED"
 }
 
-func Hash_Get(key string) string {
+func Hash_Get(key string, klen int) string {
 	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey))
-	cValue := C.hget(cKey)
-	return C.GoString(cValue)
+	defer C.free(unsafe.Pointer(cKey))
+	var cVlen C.size_t
+	cValue := C.hget(cKey, C.size_t(klen), &cVlen)
+	if cValue == nil || cVlen == 0 {
+		return "" // 或返回错误
+	}
+	goBytes := C.GoBytes(unsafe.Pointer(cValue), C.int(cVlen))
+	return BinaryToPrintable(goBytes)
 }
 
-func Hash_Delete(key string) string {
+func Hash_Delete(key string, klen int) string {
 	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey))
-
-	cRet := C.hdelete(cKey)
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey)) // Don't forget to free the C string
+	cRet := C.hdelete(cKey, cKlen)
 	if cRet == 0 {
 		return "OK"
 	}
@@ -123,93 +170,98 @@ func Hash_Count() int {
 	return int(C.hcount())
 }
 
-func Hash_Exist(key string) int {
+func Hash_Exist(key string, klen int) int {
 	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey)) // 释放 C 字符串
-	ret := C.hexist(cKey)
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	ret := C.hexist(cKey, cKlen)
 	return int(ret)
 }
 
 // ----------------------------RBTree------------------------------------- //
-var rbCounter int64 // 原子计数器
-
-func RB_Set(key, value string) string {
+func RB_Set(key string, klen int, value string, vlen int) string {
 	cKey := C.CString(key)
 	cValue := C.CString(value)
-	defer C.kvs_free(unsafe.Pointer(cKey))
-	defer C.kvs_free(unsafe.Pointer(cValue))
-	if ret := C.rset(cKey, cValue); ret == 0 {
-		return "OK"
-	}
-	return "FAILED"
-}
-
-func RB_Get(key string) string {
-	rbTreeLock.RLock()
-	defer rbTreeLock.RUnlock()
-
-	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey))
-
-	cValue := C.rget(cKey)
-	if cValue == nil {
-		return ""
-	}
-	return C.GoString(cValue)
-}
-
-func RB_Count() int {
-	return int(C.rcount())
-}
-
-func RB_Delete(key string) string {
-	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey)) // Don't forget to free the C string
-
-	cRet := C.rdelete(cKey)
-	if cRet == 0 {
-		return "OK"
-	}
-	return "FAILED"
-}
-
-func RB_Exist(key string) int {
-	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey)) // 释放 C 字符串
-	ret := C.rexist(cKey)
-	return int(ret)
-}
-
-// ----------------------------BTree------------------------------------- //
-func BTree_Set(key, value string) string {
-	bTreeLock.Lock()
-	defer bTreeLock.Unlock()
-	cKey := C.CString(key)
-	cValue := C.CString(value)
-	if cKey == nil || cValue == nil {
-		fmt.Println("invalid pointers")
-	}
-	defer C.kvs_free(unsafe.Pointer(cKey))
-	defer C.kvs_free(unsafe.Pointer(cValue))
-	ret := C.bset(cKey, cValue)
+	cKlen := C.size_t(klen)
+	cVlen := C.size_t(vlen)
+	defer C.free(unsafe.Pointer(cKey))
+	defer C.free(unsafe.Pointer(cValue))
+	ret := C.rset(cKey, cKlen, cValue, cVlen)
 	if ret == 0 {
 		return "OK"
 	}
 	return "FALIED"
 }
 
-func BTree_Get(key string) string {
+func RB_Get(key string, klen int) string {
 	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey))
-	cValue := C.bget(cKey)
-	return C.GoString(cValue)
+	defer C.free(unsafe.Pointer(cKey))
+	var cVlen C.size_t
+	cValue := C.rget(cKey, C.size_t(klen), &cVlen)
+	if cValue == nil || cVlen == 0 {
+		return "" // 或返回错误
+	}
+	goBytes := C.GoBytes(unsafe.Pointer(cValue), C.int(cVlen))
+	return BinaryToPrintable(goBytes)
 }
 
-func BTree_Delete(key string) string {
+func RB_Delete(key string, klen int) string {
 	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey)) // Don't forget to free the C string
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey)) // Don't forget to free the C string
 
-	cRet := C.bdelete(cKey)
+	cRet := C.rdelete(cKey, cKlen)
+	if cRet == 0 {
+		return "OK"
+	}
+	return "FAILED"
+}
+
+func RB_Count() int {
+	return int(C.rcount())
+}
+
+func RB_Exist(key string, klen int) int {
+	cKey := C.CString(key)
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	ret := C.rexist(cKey, cKlen)
+	return int(ret)
+}
+
+// ----------------------------BTree------------------------------------- //
+func BTree_Set(key string, klen int, value string, vlen int) string {
+	cKey := C.CString(key)
+	cValue := C.CString(value)
+	cKlen := C.size_t(klen)
+	cVlen := C.size_t(vlen)
+	defer C.free(unsafe.Pointer(cKey))
+	defer C.free(unsafe.Pointer(cValue))
+	ret := C.bset(cKey, cKlen, cValue, cVlen)
+	if ret == 0 {
+		return "OK"
+	}
+	return "FALIED"
+}
+
+func BTree_Get(key string, klen int) string {
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey))
+	var cVlen C.size_t
+	cValue := C.bget(cKey, C.size_t(klen), &cVlen)
+	if cValue == nil || cVlen == 0 {
+		return "" // 或返回错误
+	}
+	// ✅ 使用 GoBytes 安全转换任意二进制数据
+	goBytes := C.GoBytes(unsafe.Pointer(cValue), C.int(cVlen))
+	return BinaryToPrintable(goBytes)
+}
+
+func BTree_Delete(key string, klen int) string {
+	cKey := C.CString(key)
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey)) // Don't forget to free the C string
+	cRet := C.bdelete(cKey, cKlen)
 	if cRet == 0 {
 		return "OK"
 	}
@@ -220,39 +272,46 @@ func BTree_Count() int {
 	return int(C.bcount())
 }
 
-func BTree_Exist(key string) int {
+func BTree_Exist(key string, klen int) int {
 	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey)) // 释放 C 字符串
-	ret := C.bexist(cKey)
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	ret := C.bexist(cKey, cKlen)
 	return int(ret)
 }
 
 // ---------------------------- SkipList ------------------------------------- //
-var skCounter int64
-
-func Skiplist_Set(key, value string) string {
+func Skiplist_Set(key string, klen int, value string, vlen int) string {
 	cKey := C.CString(key)
 	cValue := C.CString(value)
-	defer C.kvs_free(unsafe.Pointer(cKey))
-	defer C.kvs_free(unsafe.Pointer(cValue))
-	if ret := C.zset(cKey, cValue); ret == 0 {
+	cKlen := C.size_t(klen)
+	cVlen := C.size_t(vlen)
+	defer C.free(unsafe.Pointer(cKey))
+	defer C.free(unsafe.Pointer(cValue))
+	ret := C.zset(cKey, cKlen, cValue, cVlen)
+	if ret == 0 {
 		return "OK"
 	}
 	return "FALIED"
 }
 
-func Skiplist_Get(key string) string {
+func Skiplist_Get(key string, klen int) string {
 	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey))
-	cValue := C.zget(cKey)
-	return C.GoString(cValue)
+	defer C.free(unsafe.Pointer(cKey))
+	var cVlen C.size_t
+	cValue := C.zget(cKey, C.size_t(klen), &cVlen)
+	if cValue == nil || cVlen == 0 {
+		return "" // 或返回错误
+	}
+	goBytes := C.GoBytes(unsafe.Pointer(cValue), C.int(cVlen))
+	return BinaryToPrintable(goBytes)
 }
 
-func Skiplist_Delete(key string) string {
+func Skiplist_Delete(key string, klen int) string {
 	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey)) // Don't forget to free the C string
-
-	cRet := C.zdelete(cKey)
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey)) // Don't forget to free the C string
+	cRet := C.zdelete(cKey, cKlen)
 	if cRet == 0 {
 		return "OK"
 	}
@@ -263,10 +322,11 @@ func Skiplist_Count() int {
 	return int(C.zcount())
 }
 
-func Skiplist_Exist(key string) int {
+func Skiplist_Exist(key string, klen int) int {
 	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey)) // 释放 C 字符串
-	ret := C.zexist(cKey)
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	ret := C.zexist(cKey, cKlen)
 	return int(ret)
 }
 

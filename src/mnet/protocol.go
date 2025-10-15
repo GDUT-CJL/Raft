@@ -2,20 +2,19 @@ package mnet
 
 import (
 	"bufio"
+	"bytes"
+	"course/bridge"
+	"course/raft"
+	"course/server"
 	"fmt"
 	"hash/fnv"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"course/bridge"
-	"course/raft"
-	"course/server"
-	"io"
-	"strconv"
 )
 
 var (
@@ -113,8 +112,99 @@ func addToBatch(op server.Op, conn net.Conn, kv *server.KVServer, rf *raft.Raft)
 	}
 }
 
+// 解析RESP协议
+func parseRESP(reader *bufio.Reader) ([]string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+
+	line = strings.TrimSpace(line)
+	if len(line) == 0 {
+		return nil, fmt.Errorf("empty line")
+	}
+
+	// 检查是否是数组类型
+	if line[0] != '*' {
+		return nil, fmt.Errorf("not an array type")
+	}
+
+	// 解析数组元素个数
+	arraySize, err := strconv.Atoi(line[1:])
+	if err != nil {
+		return nil, fmt.Errorf("invalid array size: %v", err)
+	}
+
+	if arraySize <= 0 {
+		return nil, fmt.Errorf("invalid array size: %d", arraySize)
+	}
+
+	var parts []string
+
+	// 解析每个元素
+	for i := 0; i < arraySize; i++ {
+		// 读取长度行
+		lengthLine, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+
+		lengthLine = strings.TrimSpace(lengthLine)
+		if len(lengthLine) == 0 || lengthLine[0] != '$' {
+			return nil, fmt.Errorf("invalid bulk string header")
+		}
+
+		// 解析字符串长度
+		strLength, err := strconv.Atoi(lengthLine[1:])
+		if err != nil {
+			return nil, fmt.Errorf("invalid string length: %v", err)
+		}
+
+		if strLength < 0 {
+			return nil, fmt.Errorf("negative string length")
+		}
+
+		// 读取实际字符串内容
+		var buffer bytes.Buffer
+		bytesRead := 0
+		for bytesRead < strLength {
+			chunk := make([]byte, strLength-bytesRead)
+			n, err := reader.Read(chunk)
+			if err != nil {
+				return nil, err
+			}
+			buffer.Write(chunk[:n])
+			bytesRead += n
+		}
+
+		// 读取结尾的\r\n
+		crlf := make([]byte, 2)
+		_, err = reader.Read(crlf)
+		if err != nil {
+			return nil, err
+		}
+
+		parts = append(parts, buffer.String())
+	}
+
+	return parts, nil
+}
+
+// 修改调试打印部分，使用十六进制显示来查看实际内容
+func debugPrintParts(parts []string) {
+	fmt.Printf("RESP command received: %s with %d parts\n", parts[0], len(parts))
+	for i, part := range parts {
+		// 显示原始字符串和十六进制表示
+		fmt.Printf("  Part %d: %q (length: %d, hex: ", i, part, len(part))
+		for _, b := range []byte(part) {
+			fmt.Printf("%02x ", b)
+		}
+		fmt.Printf(")\n")
+	}
+}
+
 // 日志批量提交操作
-func Commited(optype server.OperationType, key string, value string, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
+func Commited(optype server.OperationType, key string, klen int, value string, vlen int, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
 	var peer int
 	if _, isLeader := rf.GetState(); !isLeader {
 		for peer = 0; peer < rf.GetPeerLen(); peer++ {
@@ -130,7 +220,9 @@ func Commited(optype server.OperationType, key string, value string, conn net.Co
 	op := server.Op{
 		OpType:   optype,
 		Key:      key,
+		Klen:     klen,
 		Value:    value,
+		Vlen:     vlen,
 		ClientId: generateClientID(conn),
 		SeqId:    generateSeqID(), // 使用原子递增，防止并发过高而重复
 	}
@@ -181,28 +273,39 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 	}()
 
 	for {
-		command, err := reader.ReadString('\n')
+		// 尝试解析RESP协议
+		parts, err := parseRESP(reader)
+		var action string
+
 		if err != nil {
-			if err == io.EOF {
-				return
-			} else {
+			// 如果不是RESP格式，回退到原有文本协议处理
+			conn.Write([]byte("ERR invalid RESP format, falling back to text protocol\n"))
+
+			// 原有的文本协议处理逻辑（作为后备）
+			buffer := make([]byte, 1024)
+			n, err := conn.Read(buffer)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error reading from connection: %s\n", err)
 				return
 			}
+			command := string(buffer[:n])
+			command = strings.TrimSpace(command)
+			parts = strings.Split(command, " ")
+			if len(parts) < 1 {
+				conn.Write([]byte("Invalid command\n"))
+				continue
+			}
+			action = strings.ToUpper(parts[0])
+		} else {
+			// RESP解析成功
+			if len(parts) < 1 {
+				conn.Write([]byte("Invalid command\n"))
+				continue
+			}
+			action = strings.ToUpper(parts[0])
+			debugPrintParts(parts)
 		}
 
-		command = strings.TrimSpace(command)
-		if command == "" {
-			continue
-		}
-
-		parts := strings.Split(command, " ")
-		if len(parts) < 1 {
-			conn.Write([]byte("Invalid command\n"))
-			continue
-		}
-
-		action := strings.ToUpper(parts[0])
 		switch action {
 		// Array
 		case "SET":
@@ -210,14 +313,14 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid SET command\n"))
 				continue
 			}
-			Commited(server.Set, parts[1], parts[2], conn, kv, rf, timer)
+			Commited(server.Set, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer)
 
 		case "GET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid GET command\n"))
 				continue
 			}
-			value := bridge.Array_Get(parts[1])
+			value := bridge.Array_Get(parts[1], len(parts[1]))
 			if len(value) != 0 {
 				conn.Write([]byte(value + "\n"))
 			} else {
@@ -241,14 +344,14 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid DELETE command\n"))
 				continue
 			}
-			Commited(server.Delete, parts[1], parts[1], conn, kv, rf, timer)
+			Commited(server.Delete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer)
 
 		case "EXIST":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid EXIST command\n"))
 				continue
 			}
-			ret := bridge.Array_Exist(parts[1])
+			ret := bridge.Array_Exist(parts[1], len(parts[1]))
 			if ret == 0 {
 				conn.Write([]byte("Exist\n"))
 			} else {
@@ -261,14 +364,14 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid HSET command\n"))
 				continue
 			}
-			Commited(server.HSet, parts[1], parts[2], conn, kv, rf, timer)
+			Commited(server.HSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer)
 
 		case "HGET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid HGET command\n"))
 				continue
 			}
-			value := bridge.Hash_Get(parts[1])
+			value := bridge.Hash_Get(parts[1], len(parts[1]))
 			if len(value) != 0 {
 				conn.Write([]byte(value + "\n"))
 			} else {
@@ -291,14 +394,14 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid HDELETE command\n"))
 				continue
 			}
-			Commited(server.HDelete, parts[1], parts[1], conn, kv, rf, timer)
+			Commited(server.HDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer)
 
 		case "HEXIST":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid HEXIST command\n"))
 				continue
 			}
-			ret := bridge.Hash_Exist(parts[1])
+			ret := bridge.Hash_Exist(parts[1], len(parts[1]))
 			if ret == 0 {
 				conn.Write([]byte("Exist\n"))
 			} else {
@@ -310,14 +413,14 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid RSET command\n"))
 				continue
 			}
-			Commited(server.RSet, parts[1], parts[2], conn, kv, rf, timer)
+			Commited(server.RSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer)
 
 		case "RGET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid RGET command\n"))
 				continue
 			}
-			value := bridge.RB_Get(parts[1])
+			value := bridge.RB_Get(parts[1], len(parts[1]))
 			if len(value) != 0 {
 				conn.Write([]byte(value + "\n"))
 			} else {
@@ -328,7 +431,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("ERR invalid RCOUNT command\n"))
 				continue
 			}
-			value := bridge.RB_Count() / 3
+			value := bridge.RB_Count()
 			str := strconv.Itoa(value)
 			if len(str) != 0 {
 				conn.Write([]byte(str + "\n"))
@@ -340,14 +443,14 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid RDELETE command\n"))
 				continue
 			}
-			Commited(server.Delete, parts[1], parts[1], conn, kv, rf, timer)
+			Commited(server.Delete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer)
 
 		case "REXIST":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid REXIST command\n"))
 				continue
 			}
-			ret := bridge.RB_Exist(parts[1])
+			ret := bridge.RB_Exist(parts[1], len(parts[1]))
 			if ret == 0 {
 				conn.Write([]byte("Exist\n"))
 			} else {
@@ -360,14 +463,14 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid BSET command\n"))
 				continue
 			}
-			Commited(server.BSet, parts[1], parts[2], conn, kv, rf, timer)
+			Commited(server.BSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer)
 
 		case "BGET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid BGET command\n"))
 				continue
 			}
-			value := bridge.BTree_Get(parts[1])
+			value := bridge.BTree_Get(parts[1], len(parts[1]))
 			if len(value) != 0 {
 				conn.Write([]byte(value + "\n"))
 			} else {
@@ -390,14 +493,14 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid BDELETE command\n"))
 				continue
 			}
-			Commited(server.BDelete, parts[1], parts[1], conn, kv, rf, timer)
+			Commited(server.BDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer)
 
 		case "BEXIST":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid BEXIST command\n"))
 				continue
 			}
-			ret := bridge.BTree_Exist(parts[1])
+			ret := bridge.BTree_Exist(parts[1], len(parts[1]))
 			if ret == 0 {
 				conn.Write([]byte("Exist\n"))
 			} else {
@@ -409,14 +512,14 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid ZSET command\n"))
 				continue
 			}
-			Commited(server.ZSet, parts[1], parts[2], conn, kv, rf, timer)
+			Commited(server.ZSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer)
 
 		case "ZGET":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid ZGET command\n"))
 				continue
 			}
-			value := bridge.Skiplist_Get(parts[1])
+			value := bridge.Skiplist_Get(parts[1], len(parts[1]))
 			if len(value) != 0 {
 				conn.Write([]byte(value + "\n"))
 			} else {
@@ -440,14 +543,14 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				conn.Write([]byte("Invalid ZDELETE command\n"))
 				continue
 			}
-			Commited(server.ZDelete, parts[1], parts[1], conn, kv, rf, timer)
+			Commited(server.ZDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer)
 
 		case "ZEXIST":
 			if len(parts) != 2 {
 				conn.Write([]byte("ERR invalid ZEXIST command\n"))
 				continue
 			}
-			ret := bridge.Skiplist_Exist(parts[1])
+			ret := bridge.Skiplist_Exist(parts[1], len(parts[1]))
 			if ret == 0 {
 				conn.Write([]byte("Exist\n"))
 			} else {

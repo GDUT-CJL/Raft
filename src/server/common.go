@@ -43,7 +43,9 @@ type Op struct {
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 	Key    string
+	Klen   int
 	Value  string
+	Vlen   int
 	OpType OperationType
 	// 每次请求都会生成ClientId和SeqId
 	// ClientId和SeqId确定唯一的一次请求避免重复请求

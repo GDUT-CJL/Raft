@@ -1,173 +1,226 @@
 #include "storage.h"
-
-// ---------------------------------------Hash----------------------------------------- //
-// djb2哈希算法
-/*
-typedef struct hashnode_s{
-    char* key;
-    char* value;
-    struct hashnode_s* next;
-}hashnode_t;
-
-typedef struct hashtable_s{
-    hashnode_t** nodes;
-    int max_slots;  // hash表的最大槽位
-    int count;  // hash表当前的数目
-}hashtable_t;
-*/
-
-static unsigned long _hash(const char *key, int capacity) {
+// djb2哈希算法 - 修改为支持bstring
+static unsigned long _hash(const bstring_t *key, int capacity) {
+    if (!key || bstring_empty(key)) return 0;
+    
     unsigned long hash = 5381;
-    int c;
-    while ((c = *key++))
-        hash = ((hash << 5) + hash) + c; // hash * 33 + c
+    const uint8_t *data = bstring_data(key);
+    size_t len = bstring_len(key);
+    
+    for (size_t i = 0; i < len; i++) {
+        hash = ((hash << 5) + hash) + data[i]; // hash * 33 + c
+    }
     return hash % capacity;
 }
 
-hashnode_t* _createNode(char* key,char* value){
+hashnode_t* _createNode(bstring_t* key,bstring_t* value){
     hashnode_t* node = (hashnode_t*)kvs_malloc(sizeof(hashnode_t));
     if(!node) return NULL;
 
-    node->key = (char*)kvs_malloc(strlen(key)+1);
-    if(!node->key){
-        kvs_free(node);
-        return NULL;
-    } 
-    node->value = (char*)kvs_malloc(strlen(value)+1);
-    if(!node->value){
-        kvs_free(node->key);
-        kvs_free(node);
-        return NULL;
-    }
-    strncpy(node->key,key,strlen(key)+1); 
-    strncpy(node->value,value,strlen(value)+1);
+    node->key = key;
+    node->value = value;
+    
     node->next = NULL;// 作为链表节点，这一步也很重要不要遗忘，方便以后添加
     return node; 
 }
-
 
 int init_hashtable(){
     Hash = (hashtable_t*)kvs_malloc(sizeof(hashtable_t));
     if(!Hash)   return -1;
     Hash->nodes = (hashnode_t**)kvs_malloc(sizeof(hashnode_t*) * MAX_HASHSIZE);
-    if(!Hash->nodes)    return -1;
-    
-    if (pthread_mutex_init(&Hash->mutex, NULL) != 0) {
-        kvs_free(Hash->nodes);  
-        kvs_free(Hash);  
-        return -1; // 处理mutex初始化错误  
+    if(!Hash->nodes) {
+        kvs_free(Hash);
+        return -1;
+    }
+    // 初始化所有槽位为NULL
+    for (int i = 0; i < MAX_HASHSIZE; i++) {
+        Hash->nodes[i] = NULL;
     }
     Hash->max_slots = MAX_HASHSIZE;
     Hash->count = 0;
     return 0;
 }
 
-void dest_hashtable(){
-    if(!Hash)   return;
-    for(int i = 0 ; i < Hash->count; ++i){
-        hashnode_t* node = Hash->nodes[i];
-        while (node != NULL)
-        {
-            hashnode_t* temp = node;
+void dest_hashtable() {
+    if (!Hash) return;
+    
+    for (int i = 0; i < Hash->max_slots; i++) {
+        hashnode_t *node = Hash->nodes[i];
+        while (node != NULL) {
+            hashnode_t *temp = node;
             node = node->next;
-            Hash->nodes[i] = node;
+            
+            // 释放bstring内存
+            if (temp->key) bstring_free(temp->key);
+            if (temp->value) bstring_free(temp->value);
+            
             kvs_free(temp);
         }
+        Hash->nodes[i] = NULL;
     }
+    
+    kvs_free(Hash->nodes);
     kvs_free(Hash);
+    Hash = NULL;
 }
 
-int hexist(char* key){
-    if(key == NULL) return -1;
-    int idx = _hash(key,MAX_HASHSIZE);
+int hexist(char* key,size_t klen){
+    if(!key || klen < 0) return -1;
+    
+    bstring_t* bkey = bstring_new_from_data(key,klen);
+    if (!bkey) return -1;
+    
+    int idx = _hash(bkey,MAX_HASHSIZE);
     hashnode_t* node = Hash->nodes[idx];
-    while (node != NULL)
-    {
-        if(strcmp(node->key,key) == 0){
-            return 0;
+    
+    int result = -1;
+    while (node != NULL) {
+        if(bstring_equal(node->key,bkey)){
+            result = 0;
+            break;
         }
         node = node->next;
     }
-    return -1;   
+    
+    bstring_free(bkey);  // 释放临时key
+    return result;   
 }
 
-int hset(char* key,char* value){
-    if(key == NULL || value == NULL) return -1;
-    int idx = _hash(key,MAX_HASHSIZE);
-    pthread_mutex_lock(&Hash->mutex);
+int hset(char* key,size_t klen,char* value,size_t vlen){
+    // 检查参数和全局哈希表
+    if(key == NULL || value == NULL || klen <= 0 || vlen < 0) return -1;
+    if (Hash == NULL) return -1;
+    
+    bstring_t* bkey = bstring_new_from_data(key, klen);
+    if (!bkey) return -1;
+    
+    bstring_t* bvalue = bstring_new_from_data(value, vlen);
+    if (!bvalue) {
+        bstring_free(bkey);
+        return -1;
+    }
+    
+    int idx = _hash(bkey, MAX_HASHSIZE);
+    
+    // 检查槽位索引有效性
+    if (idx < 0 || idx >= Hash->max_slots) {
+        bstring_free(bkey);
+        bstring_free(bvalue);
+        return -1;
+    }
+    
     hashnode_t* node = Hash->nodes[idx];
-    // 遍历整个链表
+    hashnode_t* prev = NULL;
+    
+    // 遍历链表查找是否已存在
     while(node != NULL){
-        if(strcmp(node->key,key) == 0){//exist
-            strncpy(node->value,value,strlen(value)+1);
+        if(bstring_equal(node->key, bkey)){
+            // 找到已存在的key，更新value
+            if(node->value) {
+                bstring_free(node->value);
+            }
+            node->value = bvalue;
+            bstring_free(bkey);  // 释放临时key
             return 0;
         }
+        prev = node;
         node = node->next;
     }
+    
+    // 创建新节点
+    hashnode_t *new_node = _createNode(bkey, bvalue);
+    if (!new_node) {
+        bstring_free(bkey);
+        bstring_free(bvalue);
+        return -1;
+    }
+    
     // 头插法
-    hashnode_t *new_node = _createNode(key,value);
     new_node->next = Hash->nodes[idx];
     Hash->nodes[idx] = new_node;
     Hash->count++;
-    pthread_mutex_unlock(&Hash->mutex);
+    
     return 0;
-} 
+}
 
-char* hget(char* key){
-    if(key == NULL) return NULL;
-    int idx = _hash(key,MAX_HASHSIZE);
+uint8_t* hget(char* key,size_t klen,size_t* out_vlen){
+    if(key == NULL || klen < 0) return NULL;
+    
+    bstring_t* bkey = bstring_new_from_data(key,klen);
+    if (!bkey) return NULL;
+    
+    int idx = _hash(bkey,MAX_HASHSIZE);
     hashnode_t* node = Hash->nodes[idx];
-    while (node != NULL)
-    {
-        if(strcmp(node->key,key) == 0){
-            return node->value;
+    uint8_t* result = NULL;
+    
+    while (node != NULL) {
+        if(bstring_equal(node->key,bkey)){
+            *out_vlen = node->value->len;
+            result = node->value->data;
+            break;
         }
         node = node->next;
     }
-    return NULL;
-} 
+    
+    bstring_free(bkey);  // 释放临时key
+    return result;
+}
 
-// hash删除需要区分两种情况，头节点和非同节点
-int hdelete(char* key) {
-    if (key == NULL || Hash == NULL) return -1;
+int hdelete(char* key,size_t klen){
+    if (key == NULL || klen < 0) return -1;
     
-    int idx = _hash(key, MAX_HASHSIZE);
-    if (idx < 0 || idx >= MAX_HASHSIZE) return -1;
+    bstring_t* bkey = bstring_new_from_data(key,klen);
+    if (!bkey) return -1;
     
+    int idx = _hash(bkey, MAX_HASHSIZE);
     hashnode_t* head = Hash->nodes[idx];
-    if (head == NULL) return -1;  // Key doesn't exist
-
-    // Check head node
-    if (strcmp(head->key, key) == 0) {
+    
+    // 检查头节点是否为NULL
+    if (head == NULL) {
+        bstring_free(bkey);  // 释放临时key
+        return -1;
+    }
+    
+    // 头节点匹配的情况
+    if(bstring_equal(head->key, bkey)){
         hashnode_t* new_head = head->next;
         Hash->nodes[idx] = new_head;
 
-        if (head->key != NULL) kvs_free(head->key);
-        if (head->value != NULL) kvs_free(head->value);
+        // 使用bstring_free而不是kvs_free
+        if(head->key) bstring_free(head->key);
+        if(head->value) bstring_free(head->value);
+
         kvs_free(head);
+        bstring_free(bkey);  // 释放临时key
 
         Hash->count--;
         return 0;
     }
 
-    // Search in the list
+    // 如果不是头节点则遍历链表
     hashnode_t* cur = head;
-    while (cur->next != NULL) {
-        if (strcmp(cur->next->key, key) == 0) {
-            hashnode_t* tmp = cur->next;
-            cur->next = cur->next->next;
-
-            if (tmp->key != NULL) kvs_free(tmp->key);
-            if (tmp->value != NULL) kvs_free(tmp->value);
-            kvs_free(tmp);
-
-            Hash->count--;
-            return 0;
-        }
+    while(cur->next != NULL){
+        if(bstring_equal(cur->next->key, bkey)) break;
         cur = cur->next;
     }
 
-    return -1;  // Key not found
+    if(cur->next == NULL){
+        bstring_free(bkey);  // 释放临时key
+        return -1;
+    }
+
+    hashnode_t* tmp = cur->next;
+    cur->next = cur->next->next;
+
+    // 使用bstring_free释放bstring对象
+    if(tmp->key) bstring_free(tmp->key);
+    if(tmp->value) bstring_free(tmp->value);
+
+    kvs_free(tmp);
+    bstring_free(bkey);  // 释放临时key
+
+    Hash->count--;
+    return 0;
 }
 
 int hcount(){
