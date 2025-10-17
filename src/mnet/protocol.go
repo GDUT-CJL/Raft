@@ -583,6 +583,56 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 			} else {
 				conn.Write([]byte("nil\n"))
 			}
+		//Rocksdb
+		case "RCSET":
+			if len(parts) != 3 {
+				conn.Write([]byte("Invalid RCSET command\n"))
+				continue
+			}
+			Commited(server.RCSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer)
+
+		case "RCGET":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid RCGET command\n"))
+				continue
+			}
+			value := bridge.RC_Get(parts[1])
+			if len(value) != 0 {
+				conn.Write([]byte(value + "\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		case "RCCOUNT":
+			if len(parts) != 1 {
+				conn.Write([]byte("ERR invalid RCCOUNT command\n"))
+				continue
+			}
+			value := bridge.RC_Count()
+
+			str := strconv.Itoa(value)
+			if len(str) != 0 {
+				conn.Write([]byte(str + "\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
+		case "RCDELETE":
+			if len(parts) != 2 {
+				conn.Write([]byte("Invalid ZDELETE command\n"))
+				continue
+			}
+			Commited(server.RCDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer)
+
+		case "RCEXIST":
+			if len(parts) != 2 {
+				conn.Write([]byte("ERR invalid ZEXIST command\n"))
+				continue
+			}
+			ret := bridge.Skiplist_Exist(parts[1], len(parts[1]))
+			if ret == 0 {
+				conn.Write([]byte("Exist\n"))
+			} else {
+				conn.Write([]byte("nil\n"))
+			}
 		case "LEADER":
 			currentTerm, isLeader := kv.GetRaft().GetState()
 			fmt.Printf("当前状态: %v, 当前任期: %d\n", isLeader, currentTerm)
