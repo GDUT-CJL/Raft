@@ -37,8 +37,8 @@ type KVServer struct {
 	// 客户端每次发送一个请求在server中都会给随机一个ClentId和SeqId
 	clientSeqTable map[int64]LastOperationInfo // 客户端最后处理的序列号,处理重复请求
 	notifyChans    map[int]chan *OpReply
-
-	Counter int64 // 原子计数器,用于测试
+	notifyMu       sync.RWMutex
+	Counter        int64 // 原子计数器,用于测试
 }
 
 func (kv *KVServer) GetSetCounter() int64 {
@@ -214,7 +214,10 @@ func (kv *KVServer) applyToStateMachine(op Op) *OpReply {
 	return &OpReply{Value: value, Err: err}
 }
 
+// 同时写入读取map即并发的读写map的时候会出现错误
 func (kv *KVServer) GetNotifyChannel(index int) chan *OpReply {
+	kv.notifyMu.Lock()
+	defer kv.notifyMu.Unlock()
 	if _, ok := kv.notifyChans[index]; !ok {
 		kv.notifyChans[index] = make(chan *OpReply, 1)
 	}
@@ -222,6 +225,8 @@ func (kv *KVServer) GetNotifyChannel(index int) chan *OpReply {
 }
 
 func (kv *KVServer) RemoveNotifyChannel(index int) {
+	kv.notifyMu.Lock()
+	defer kv.notifyMu.Unlock()
 	delete(kv.notifyChans, index)
 }
 

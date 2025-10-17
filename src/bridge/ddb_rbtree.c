@@ -294,7 +294,7 @@ int rset(char* key,size_t klen,char* value,size_t vlen){
 uint8_t* rget(const char* key,size_t klen,size_t* out_len){
     if(key == NULL) return NULL;
     RBNode* get = search(root,key,klen);
-    if(get == NULL) return NULL;
+    if(get == NULL || get == root) return NULL;
     *out_len = get->value->len;
     return get->value->data;
 }

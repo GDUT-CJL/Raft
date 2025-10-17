@@ -1,7 +1,5 @@
 package main
 
-// GOOS=linux GOARCH=amd64 go build -o kvstore main.go
-// CGO_LDFLAGS="-lrocksdb" GOOS=linux GOARCH=amd64 go build -o kvstore main.go
 import (
 	"flag"
 	"fmt"
@@ -9,7 +7,6 @@ import (
 	"course/bridge"
 	"course/config"
 	"course/mnet"
-	//"course/raft"
 	"course/server"
 	"os"
 	"os/signal"
@@ -24,25 +21,28 @@ type Node struct {
 }
 
 // 启动单个节点
-func startNode(cfg config.NodeConfig, clusterConfigs []config.NodeConfig, nodeId int) (*Node, error) {
+func startNode(cfg config.NodeConfig, clusterConfigs []config.NodeConfig, nodeId int, batchConfig config.BatchConfig) (*Node, error) {
 	// 准备RPC地址列表
 	rpcAddrs := make([]string, len(clusterConfigs))
 	for i, nodeCfg := range clusterConfigs {
 		rpcAddrs[i] = nodeCfg.RPCAddr
 	}
 
-	// 创建持久化存储
-	// persister := raft.MakePersister()
-	// 创建KV服务器
+	// 初始化批量管理器
+	mnet.InitBatchManager(batchConfig.BatchSize, batchConfig.BatchTimeout)
+
+	fmt.Printf("Batch configuration - Size: %d, Timeout: %v\n",
+		batchConfig.BatchSize, batchConfig.BatchTimeout)
+
 	var kv *server.KVServer
 	if cfg.ID == nodeId {
-		fmt.Printf("nodeId :%d,cfg.ID = %d\n", nodeId, cfg.ID)
+		fmt.Printf("nodeId: %d, cfg.ID = %d\n", nodeId, cfg.ID)
 		// 启动rpc服务
 		kv = server.StartKVServer(rpcAddrs, cfg.ID, -1)
 		// 启动客户端监听服务
 		go mnet.StartTCPServer(kv, cfg.ClientAddr, cfg.ID)
 	}
-	// 启动TCP服务器处理客户端请求
+
 	return &Node{
 		kvServer: kv,
 		config:   cfg,
@@ -57,7 +57,7 @@ func main() {
 	flag.Parse()
 
 	// 读取配置文件
-	configs, err := config.LoadConfig(*configPath)
+	globalConfig, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Printf("Error loading config: %v\n", err)
 		os.Exit(1)
@@ -67,9 +67,9 @@ func main() {
 	bridge.InitStorage()
 
 	// 创建节点
-	nodes := make([]*Node, len(configs))
-	for i, cfg := range configs {
-		node, err := startNode(cfg, configs, *configId)
+	nodes := make([]*Node, len(globalConfig.Nodes))
+	for i, cfg := range globalConfig.Nodes {
+		node, err := startNode(cfg, globalConfig.Nodes, *configId, globalConfig.Batch)
 		if err != nil {
 			fmt.Printf("Failed to start node %d: %v\n", cfg.ID, err)
 			os.Exit(1)
@@ -86,6 +86,5 @@ func main() {
 
 	// 优雅关闭
 	fmt.Println("\nShutting down cluster...")
-
 	time.Sleep(1 * time.Second)
 }

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,20 +16,62 @@ import (
 	"time"
 )
 
+// 批量管理器结构体
+type BatchManager struct {
+	batchSize      int
+	batchTimeout   time.Duration
+	batchBufferMap map[net.Conn][]server.Op
+	batchMutex     *sync.RWMutex
+}
+
 var (
-	batchBufferMap  = make(map[net.Conn][]server.Op) //key为对应的一个连接 value为操作数组
-	batchMutex      = &sync.RWMutex{}                // 批量提交数组的锁
-	batchSize       = 1000                           // 一次累计批量提交大小
-	batchTimeout    = 3000 * time.Millisecond        // 超时提交时间
+	// 全局批量管理器实例
+	globalBatchManager *BatchManager
+
+	// 原子计数器
 	clientIDCounter int64
 	seqIDCounter    int64
 )
 
+// 初始化批量管理器
+func InitBatchManager(batchSize int, batchTimeout time.Duration) {
+	globalBatchManager = &BatchManager{
+		batchSize:      batchSize,
+		batchTimeout:   batchTimeout,
+		batchBufferMap: make(map[net.Conn][]server.Op),
+		batchMutex:     &sync.RWMutex{},
+	}
+}
+
+// 获取批量管理器实例
+func GetBatchManager() *BatchManager {
+	return globalBatchManager
+}
+
+// 获取批量大小
+func (bm *BatchManager) GetBatchSize() int {
+	return bm.batchSize
+}
+
+// 获取批量超时时间
+func (bm *BatchManager) GetBatchTimeout() time.Duration {
+	return bm.batchTimeout
+}
+
+// 动态更新批量参数
+func (bm *BatchManager) UpdateBatchParams(batchSize int, batchTimeout time.Duration) {
+	bm.batchMutex.Lock()
+	defer bm.batchMutex.Unlock()
+
+	bm.batchSize = batchSize
+	bm.batchTimeout = batchTimeout
+}
+
+// 原有的 generateSeqID 和 generateClientID 保持不变
 func generateSeqID() int64 {
 	return atomic.AddInt64(&seqIDCounter, 1)
 }
 
-// generateClientID generates a unique client ID for each connection
 func generateClientID(conn net.Conn) int64 {
 	addr := conn.RemoteAddr().(*net.TCPAddr).IP.String()
 	hash := fnv.New64a()
@@ -38,7 +79,7 @@ func generateClientID(conn net.Conn) int64 {
 	return int64(hash.Sum64()) ^ (atomic.AddInt64(&clientIDCounter, 1) << 32)
 }
 
-// sendBatch sends a batch of operations to Raft
+// sendBatch 修改为使用批量管理器
 func sendBatch(kv *server.KVServer, conn net.Conn, batch []server.Op, rf *raft.Raft) {
 	if len(batch) == 0 {
 		conn.Write([]byte("EMPTY_BATCH\n"))
@@ -62,54 +103,86 @@ func sendBatch(kv *server.KVServer, conn net.Conn, batch []server.Op, rf *raft.R
 	select {
 	case <-notifyCh:
 		conn.Write([]byte("BATCH_OK\n"))
-		kv.RemoveNotifyChannel(index) // 立即移除通知通道，避免竞争条件
+		kv.RemoveNotifyChannel(index)
 	case <-time.After(5 * time.Second):
 		conn.Write([]byte("BATCH_TIMEOUT\n"))
-		kv.RemoveNotifyChannel(index) // 超时后也移除通道
+		kv.RemoveNotifyChannel(index)
 	}
 
 	// Clean up notification channel
 	go func() {
-		time.Sleep(100 * time.Millisecond) // Small delay to ensure all notifications are processed
+		time.Sleep(100 * time.Millisecond)
 		kv.RemoveNotifyChannel(index)
 	}()
 }
 
-// flushBatch flushes the batch for a specific connection
+// flushBatch 修改为使用批量管理器
 func flushBatch(kv *server.KVServer, conn net.Conn, rf *raft.Raft) {
-	batchMutex.Lock()
-	defer batchMutex.Unlock()
+	bm := GetBatchManager()
+	bm.batchMutex.Lock()
+	defer bm.batchMutex.Unlock()
 
-	batch := batchBufferMap[conn]
+	batch := bm.batchBufferMap[conn]
 	if len(batch) > 0 {
-		// 复制并清空原缓冲区
 		batchToSend := make([]server.Op, len(batch))
 		copy(batchToSend, batch)
-		batchBufferMap[conn] = nil // 清空而非删除
-		sendBatch(kv, conn, batchToSend, rf)
+		bm.batchBufferMap[conn] = nil
+		go sendBatch(kv, conn, batchToSend, rf)
 	}
 }
 
-// addToBatch 将op日志累计添加到某个map的key连接对应的value的op数组中
+// addToBatch 修改为使用批量管理器
 func addToBatch(op server.Op, conn net.Conn, kv *server.KVServer, rf *raft.Raft) {
-	batchMutex.Lock()
-	defer batchMutex.Unlock()
+	bm := GetBatchManager()
+	bm.batchMutex.Lock()
+	defer bm.batchMutex.Unlock()
 
-	// 如果对应累计没有数组则创建
-	if _, exists := batchBufferMap[conn]; !exists {
-		batchBufferMap[conn] = make([]server.Op, 0, batchSize)
+	if _, exists := bm.batchBufferMap[conn]; !exists {
+		bm.batchBufferMap[conn] = make([]server.Op, 0, bm.batchSize)
 	}
 
-	// 将日志添加到缓存区中等待提交
-	batchBufferMap[conn] = append(batchBufferMap[conn], op)
+	bm.batchBufferMap[conn] = append(bm.batchBufferMap[conn], op)
 
-	// 如果日志长度大于我们规定的batchSize的长度则进行一次提交
-	if len(batchBufferMap[conn]) >= batchSize {
-		batch := make([]server.Op, len(batchBufferMap[conn]))
-		copy(batch, batchBufferMap[conn])
-		batchBufferMap[conn] = nil // 清空缓冲区
+	if len(bm.batchBufferMap[conn]) >= bm.batchSize {
+		batch := make([]server.Op, len(bm.batchBufferMap[conn]))
+		copy(batch, bm.batchBufferMap[conn])
+		bm.batchBufferMap[conn] = nil
 		go sendBatch(kv, conn, batch, rf)
 	}
+}
+
+// Commited 函数修改为使用批量管理器
+func Commited(optype server.OperationType, key string, klen int, value string, vlen int, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
+	var peer int
+	if _, isLeader := rf.GetState(); !isLeader {
+		for peer = 0; peer < rf.GetPeerLen(); peer++ {
+			if peer == rf.GetLeaderId() {
+				break
+			}
+		}
+		s := strconv.Itoa(peer)
+		conn.Write([]byte("Leader is Node " + s + "\n"))
+		return
+	}
+
+	op := server.Op{
+		OpType:   optype,
+		Key:      key,
+		Klen:     klen,
+		Value:    value,
+		Vlen:     vlen,
+		ClientId: generateClientID(conn),
+		SeqId:    generateSeqID(),
+	}
+	addToBatch(op, conn, kv, rf)
+	conn.Write([]byte("ACK\n"))
+
+	// Reset timer using configured timeout
+	bm := GetBatchManager()
+	if !timer.Stop() {
+		<-timer.C
+	}
+	timer.Reset(bm.GetBatchTimeout())
 }
 
 // 解析RESP协议
@@ -190,73 +263,28 @@ func parseRESP(reader *bufio.Reader) ([]string, error) {
 	return parts, nil
 }
 
-// 修改调试打印部分，使用十六进制显示来查看实际内容
-func debugPrintParts(parts []string) {
-	fmt.Printf("RESP command received: %s with %d parts\n", parts[0], len(parts))
-	for i, part := range parts {
-		// 显示原始字符串和十六进制表示
-		fmt.Printf("  Part %d: %q (length: %d, hex: ", i, part, len(part))
-		for _, b := range []byte(part) {
-			fmt.Printf("%02x ", b)
-		}
-		fmt.Printf(")\n")
-	}
-}
-
-// 日志批量提交操作
-func Commited(optype server.OperationType, key string, klen int, value string, vlen int, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
-	var peer int
-	if _, isLeader := rf.GetState(); !isLeader {
-		for peer = 0; peer < rf.GetPeerLen(); peer++ {
-			if peer == rf.GetLeaderId() {
-				break
-			}
-		}
-		s := strconv.Itoa(peer)
-		conn.Write([]byte("Leader is Node " + s + "\n"))
-		return
-	}
-
-	op := server.Op{
-		OpType:   optype,
-		Key:      key,
-		Klen:     klen,
-		Value:    value,
-		Vlen:     vlen,
-		ClientId: generateClientID(conn),
-		SeqId:    generateSeqID(), // 使用原子递增，防止并发过高而重复
-	}
-	addToBatch(op, conn, kv, rf)
-	conn.Write([]byte("ACK\n"))
-	// Reset timer on each operation
-	if !timer.Stop() {
-		<-timer.C
-	}
-	timer.Reset(batchTimeout)
-}
-
-// handleConnection processes TCP connections
+// handleConnection 修改为使用批量管理器
 func handleConnection(kv *server.KVServer, conn net.Conn) {
 	rf := kv.GetRaft()
-	// 创建退出通道用于超时goroutine
 	quitCh := make(chan struct{})
 	defer func() {
-		fmt.Printf("Closing connection from %s\n", conn.RemoteAddr())
-		// 重试3次清空缓冲区，确保所有数据都被提交
 		for i := 0; i < 3; i++ {
 			flushBatch(kv, conn, rf)
 			time.Sleep(10 * time.Millisecond)
 		}
-		close(quitCh) // 通知超时goroutine退出
-		batchMutex.Lock()
-		delete(batchBufferMap, conn) // 移除连接对应的缓冲区，避免内存泄漏
-		batchMutex.Unlock()
+		close(quitCh)
+
+		bm := GetBatchManager()
+		bm.batchMutex.Lock()
+		delete(bm.batchBufferMap, conn)
+		bm.batchMutex.Unlock()
 		conn.Close()
 	}()
 	reader := bufio.NewReader(conn)
 
-	// Start a timer for this connection
-	timer := time.NewTimer(batchTimeout)
+	// Start a timer with configured timeout
+	bm := GetBatchManager()
+	timer := time.NewTimer(bm.GetBatchTimeout())
 	defer timer.Stop()
 
 	// Goroutine to handle batch timeouts
@@ -265,13 +293,12 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 			select {
 			case <-timer.C:
 				flushBatch(kv, conn, rf)
-				timer.Reset(batchTimeout)
+				timer.Reset(bm.GetBatchTimeout())
 			case <-quitCh:
-				return // 收到退出信号，结束goroutine
+				return
 			}
 		}
 	}()
-
 	for {
 		// 尝试解析RESP协议
 		parts, err := parseRESP(reader)
@@ -285,7 +312,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 			buffer := make([]byte, 1024)
 			n, err := conn.Read(buffer)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error reading from connection: %s\n", err)
+				//fmt.Fprintf(os.Stderr, "Error reading from connection: %s\n", err)
 				return
 			}
 			command := string(buffer[:n])
@@ -303,7 +330,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				continue
 			}
 			action = strings.ToUpper(parts[0])
-			debugPrintParts(parts)
+			//debugPrintParts(parts)
 		}
 
 		switch action {
