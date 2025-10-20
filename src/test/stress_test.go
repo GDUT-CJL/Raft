@@ -1,6 +1,7 @@
 // stress_test_test.go
 package test
 
+//go test -v -run TestStressPerformance
 import (
 	"fmt"
 	"testing"
@@ -9,7 +10,7 @@ import (
 
 func TestStressPerformance(t *testing.T) {
 	// 注意：需要先启动服务器
-	serverAddr := "192.168.79.158:8000"
+	serverAddr := "192.168.79.159:8000"
 
 	testCases := []struct {
 		name     string

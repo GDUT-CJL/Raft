@@ -49,7 +49,7 @@ func (st *StressTester) runClient(clientID int) {
 		start := time.Now()
 
 		// 发送SET命令 (RESP格式)
-		cmd := fmt.Sprintf("*3\r\n$5\r\nRCSET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
+		cmd := fmt.Sprintf("*3\r\n$4\r\nRSET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
 			len(key), key, len(value), value)
 
 		//cmd := fmt.Sprintf("*2\r\n$3\r\nGET\r\n$%d\r\n%s\r\n", len(key), key)
