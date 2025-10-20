@@ -1,5 +1,6 @@
 package main
 
+// CGO_LDFLAGS="-lrocksdb" GOOS=linux GOARCH=amd64 go build -o kvstore main.go
 import (
 	"flag"
 	"fmt"
