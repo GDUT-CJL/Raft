@@ -22,10 +22,11 @@ import (
 	"log"
 	"net"
 	//"os"
+	"bytes"
+	"course/labgob"
 	"sync"
 	"sync/atomic"
 	"time"
-	//	"course/labgob"
 
 	// 替换为实际的 proto 包路径
 
@@ -120,6 +121,26 @@ func (rf *Raft) GetPeerLen() int {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return len(rf.peers)
+}
+func (rf *Raft) GetRaftStateSize() int {
+	// 方案1：直接查询文件（最准确）
+	fileSize := rf.persister.RaftStateSize()
+
+	// 如果文件不存在或大小为0，使用内存中的估算
+	if fileSize == 0 {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+
+		// 估算当前状态大小
+		w := new(bytes.Buffer)
+		e := labgob.NewEncoder(w)
+		e.Encode(rf.currentTerm)
+		e.Encode(rf.votedFor)
+		rf.log.persisted(e)
+		return w.Len()
+	}
+
+	return fileSize
 }
 
 // 将调用此函数的节点转换状态成为follower，任期更改为传入参数term

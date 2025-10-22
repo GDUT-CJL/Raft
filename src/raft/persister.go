@@ -29,6 +29,32 @@ type Persister struct {
 	peerDir string // 节点专属存储目录
 }
 
+// 在 persister.go 中添加以下方法
+
+func (ps *Persister) RaftStateSize() int {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	raftPath := filepath.Join(ps.peerDir, raftStateFile)
+	return ps.getFileSize(raftPath)
+}
+
+func (ps *Persister) SnapshotSize() int {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	snapPath := filepath.Join(ps.peerDir, snapshotFile)
+	return ps.getFileSize(snapPath)
+}
+
+// 辅助方法：获取文件大小
+func (ps *Persister) getFileSize(filename string) int {
+	info, err := os.Stat(filename)
+	if err != nil {
+		return 0 // 文件不存在
+	}
+	return int(info.Size())
+}
 func MakePersister(me int) *Persister {
 	// filepath.Join 函数用于拼接路径
 	peerDir := filepath.Join(persistDir, fmt.Sprintf("peer%d", me))
@@ -97,9 +123,3 @@ func (ps *Persister) ReadSnapshot() []byte {
 	}
 	return data
 }
-
-// func (ps *Persister) SnapshotSize() int {
-// 	ps.mu.Lock()
-// 	defer ps.mu.Unlock()
-// 	return len(ps.snapshot)
-// }

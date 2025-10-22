@@ -605,6 +605,177 @@ int btree_depth(btree *T){
     }
     return depth;
 }
+
+// B树快照 - 前序遍历序列化
+int btree_snapshot_node(btree_node* node, char** ptr, char* end) {
+    if (!node || *ptr >= end) return -1;
+    
+    // 写入当前节点信息：叶子标记 + 元素数量
+    memcpy(*ptr, &node->leaf, sizeof(node->leaf));
+    *ptr += sizeof(node->leaf);
+    memcpy(*ptr, &node->num, sizeof(node->num));
+    *ptr += sizeof(node->num);
+    
+    // 写入每个键值对
+    for (int i = 0; i < node->num; i++) {
+        if (*ptr + 2 * sizeof(size_t) > end) return -1;
+        
+        // 写入key
+        size_t key_len = node->keys[i]->len;
+        memcpy(*ptr, &key_len, sizeof(key_len));
+        *ptr += sizeof(key_len);
+        
+        if (*ptr + key_len > end) return -1;
+        memcpy(*ptr, node->keys[i]->data, key_len);
+        *ptr += key_len;
+        
+        // 写入value
+        size_t value_len = node->values[i]->len;
+        memcpy(*ptr, &value_len, sizeof(value_len));
+        *ptr += sizeof(value_len);
+        
+        if (*ptr + value_len > end) return -1;
+        memcpy(*ptr, node->values[i]->data, value_len);
+        *ptr += value_len;
+    }
+    
+    // 递归序列化子节点
+    if (!node->leaf) {
+        for (int i = 0; i <= node->num; i++) {
+            if (btree_snapshot_node(node->children[i], ptr, end) != 0) {
+                return -1;
+            }
+        }
+    }
+    
+    return 0;
+}
+
+// 计算B树序列化所需大小
+size_t btree_calculate_size(btree_node* node) {
+    if (!node) return 0;
+    
+    size_t size = sizeof(node->leaf) + sizeof(node->num);
+    
+    // 键值对大小
+    for (int i = 0; i < node->num; i++) {
+        size += 2 * sizeof(size_t) + node->keys[i]->len + node->values[i]->len;
+    }
+    
+    // 子节点大小
+    if (!node->leaf) {
+        for (int i = 0; i <= node->num; i++) {
+            size += btree_calculate_size(node->children[i]);
+        }
+    }
+    
+    return size;
+}
+
+int btree_snapshot(char** data, size_t* size) {
+    if (!data || !size || !kv_b || !kv_b->root_node) return -1;
+    
+    // 计算总大小
+    *size = sizeof(int) + btree_calculate_size(kv_b->root_node);
+    *data = (char*)kvs_malloc(*size);
+    if (!*data) return -1;
+    
+    char* ptr = *data;
+    char* end = *data + *size;
+    
+    // 写入元素总数
+    memcpy(ptr, &kv_b->count, sizeof(kv_b->count));
+    ptr += sizeof(kv_b->count);
+    
+    // 序列化树结构
+    if (btree_snapshot_node(kv_b->root_node, &ptr, end) != 0) {
+        kvs_free(*data);
+        return -1;
+    }
+    
+    return 0;
+}
+
+// B树恢复 - 需要对应的反序列化函数
+int btree_restore_node(btree* T, btree_node** node, const char** ptr, const char* end) {
+    if (!ptr || !*ptr || *ptr >= end) return -1;
+    
+    // 读取节点基本信息
+    int leaf, num;
+    memcpy(&leaf, *ptr, sizeof(leaf));
+    *ptr += sizeof(leaf);
+    memcpy(&num, *ptr, sizeof(num));
+    *ptr += sizeof(num);
+    
+    // 创建节点
+    *node = btree_node_create(T, leaf);
+    if (!*node) return -1;
+    (*node)->num = num;
+    
+    // 读取键值对
+    for (int i = 0; i < num; i++) {
+        if (*ptr + 2 * sizeof(size_t) > end) return -1;
+        
+        // 读取key
+        size_t key_len;
+        memcpy(&key_len, *ptr, sizeof(key_len));
+        *ptr += sizeof(key_len);
+        
+        if (*ptr + key_len > end) return -1;
+        (*node)->keys[i] = bstring_new_from_data(*ptr, key_len);
+        *ptr += key_len;
+        
+        // 读取value
+        size_t value_len;
+        memcpy(&value_len, *ptr, sizeof(value_len));
+        *ptr += sizeof(value_len);
+        
+        if (*ptr + value_len > end) return -1;
+        (*node)->values[i] = bstring_new_from_data(*ptr, value_len);
+        *ptr += value_len;
+    }
+    
+    // 递归恢复子节点
+    if (!leaf) {
+        for (int i = 0; i <= num; i++) {
+            if (btree_restore_node(T, &(*node)->children[i], ptr, end) != 0) {
+                return -1;
+            }
+        }
+    }
+    
+    return 0;
+}
+
+int btree_restore(const char* data, size_t size) {
+    if (!data || size < sizeof(int)) return -1;
+    
+    const char* ptr = data;
+    const char* end = data + size;
+    
+    // 读取元素总数
+    int count;
+    memcpy(&count, ptr, sizeof(count));
+    ptr += sizeof(count);
+    
+    // 清空现有B树
+    if (kv_b && kv_b->root_node) {
+        btree_destroy(kv_b);
+    }
+    
+    // 重新初始化B树
+    if (init_btree(kv_b->m) != 0) return -1;
+    
+    // 恢复树结构
+    if (btree_restore_node(kv_b, &kv_b->root_node, &ptr, end) != 0) {
+        btree_destroy(kv_b);
+        return -1;
+    }
+    
+    kv_b->count = count;
+    return 0;
+}
+
 /*------------------------------------------------------------------*/
 
 /*----------------------------kv存储协议-----------------------------*/

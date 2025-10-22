@@ -12,7 +12,127 @@ static unsigned long _hash(const bstring_t *key, int capacity) {
     }
     return hash % capacity;
 }
+// 在 ddb_hash.c 中添加
 
+// 哈希快照
+int hash_snapshot(char** data, size_t* size) {
+    if (!data || !size) return -1;
+    
+    // 计算所需大小
+    size_t total_size = sizeof(int); // 元素数量
+    for (int i = 0; i < Hash->max_slots; i++) {
+        hashnode_t* node = Hash->nodes[i];
+        while (node) {
+            total_size += 2 * sizeof(size_t) + node->key->len + node->value->len;
+            node = node->next;
+        }
+    }
+    
+    char* snapshot = (char*)kvs_malloc(total_size);
+    if (!snapshot) {
+        return -1;
+    }
+    
+    char* ptr = snapshot;
+    
+    // 写入元素数量
+    memcpy(ptr, &Hash->count, sizeof(Hash->count));
+    ptr += sizeof(Hash->count);
+    
+    // 写入每个元素
+    for (int i = 0; i < Hash->max_slots; i++) {
+        hashnode_t* node = Hash->nodes[i];
+        while (node) {
+            // 写入key
+            size_t key_len = node->key->len;
+            memcpy(ptr, &key_len, sizeof(key_len));
+            ptr += sizeof(key_len);
+            memcpy(ptr, node->key->data, key_len);
+            ptr += key_len;
+            
+            // 写入value
+            size_t value_len = node->value->len;
+            memcpy(ptr, &value_len, sizeof(value_len));
+            ptr += sizeof(value_len);
+            memcpy(ptr, node->value->data, value_len);
+            ptr += value_len;
+            
+            node = node->next;
+        }
+    }
+    
+    *data = snapshot;
+    *size = total_size;
+    return 0;
+}
+
+// 哈希恢复
+int hash_restore(const char* data, size_t size) {
+    if (!data || size < sizeof(int)) return -1;
+    
+    const char* ptr = data;
+    
+    // 读取元素数量
+    int count;
+    memcpy(&count, ptr, sizeof(count));
+    ptr += sizeof(count);
+    
+    // 清空现有哈希表
+    for (int i = 0; i < Hash->max_slots; i++) {
+        hashnode_t* node = Hash->nodes[i];
+        while (node) {
+            hashnode_t* next = node->next;
+            bstring_free(node->key);
+            bstring_free(node->value);
+            kvs_free(node);
+            node = next;
+        }
+        Hash->nodes[i] = NULL;
+    }
+    Hash->count = 0;
+    
+    // 恢复每个元素
+    for (int i = 0; i < count; i++) {
+        if (ptr + sizeof(size_t) > data + size) break;
+        
+        // 读取key
+        size_t key_len;
+        memcpy(&key_len, ptr, sizeof(key_len));
+        ptr += sizeof(key_len);
+        
+        if (ptr + key_len > data + size) break;
+        bstring_t* key = bstring_new_from_data(ptr, key_len);
+        ptr += key_len;
+        
+        // 读取value
+        size_t value_len;
+        memcpy(&value_len, ptr, sizeof(value_len));
+        ptr += sizeof(value_len);
+        
+        if (ptr + value_len > data + size) {
+            bstring_free(key);
+            break;
+        }
+        bstring_t* value = bstring_new_from_data(ptr, value_len);
+        ptr += value_len;
+        
+        // 插入到哈希表
+        int idx = _hash(key, Hash->max_slots);
+        hashnode_t* new_node = (hashnode_t*)kvs_malloc(sizeof(hashnode_t));
+        if (new_node) {
+            new_node->key = key;
+            new_node->value = value;
+            new_node->next = Hash->nodes[idx];
+            Hash->nodes[idx] = new_node;
+            Hash->count++;
+        } else {
+            bstring_free(key);
+            bstring_free(value);
+        }
+    }
+    
+    return 0;
+}
 hashnode_t* _createNode(bstring_t* key,bstring_t* value){
     hashnode_t* node = (hashnode_t*)kvs_malloc(sizeof(hashnode_t));
     if(!node) return NULL;

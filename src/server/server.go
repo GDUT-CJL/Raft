@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"course/bridge"
 	"course/labgob"
 	"course/raft"
@@ -39,6 +40,8 @@ type KVServer struct {
 	notifyChans    map[int]chan *OpReply
 	notifyMu       sync.RWMutex
 	Counter        int64 // 原子计数器,用于测试
+	// 添加快照相关的字段
+	persister *raft.Persister
 }
 
 func (kv *KVServer) GetSetCounter() int64 {
@@ -67,7 +70,8 @@ func StartKVServer(servers []string, me int, maxraftstate int) *KVServer {
 	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
-
+	// 初始化持久化器
+	kv.persister = raft.MakePersister(me)
 	// You may need initialization code here.
 
 	kv.applyCh = make(chan raft.ApplyMsg)
@@ -82,6 +86,64 @@ func StartKVServer(servers []string, me int, maxraftstate int) *KVServer {
 
 	go kv.applyTask()
 	return kv
+}
+
+// 制作快照
+func (kv *KVServer) makeSnapshot(index int) {
+	// 获取C层状态机的快照
+	stateMachineSnapshot := bridge.Storage_Snapshot()
+	if stateMachineSnapshot == nil {
+		fmt.Printf("KVServer[%d] failed to create storage snapshot\n", kv.me)
+		return
+	}
+
+	// 编码去重表和状态机快照
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+
+	if e.Encode(kv.clientSeqTable) != nil {
+		fmt.Printf("KVServer[%d] encode clientSeqTable failed\n", kv.me)
+		return
+	}
+	if e.Encode(stateMachineSnapshot) != nil {
+		fmt.Printf("KVServer[%d] encode stateMachineSnapshot failed\n", kv.me)
+		return
+	}
+
+	snapshot := w.Bytes()
+	kv.rf.Snapshot(index, snapshot)
+	fmt.Printf("KVServer[%d] made snapshot at index %d, size: %d\n", kv.me, index, len(snapshot))
+}
+
+// 从快照恢复
+func (kv *KVServer) restoreFromSnapshot(snapshot []byte) {
+	if len(snapshot) == 0 {
+		return
+	}
+
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+
+	var clientSeqTable map[int64]LastOperationInfo
+	var stateMachineSnapshot []byte
+
+	if d.Decode(&clientSeqTable) != nil {
+		fmt.Printf("KVServer[%d] decode clientSeqTable failed\n", kv.me)
+		return
+	}
+	if d.Decode(&stateMachineSnapshot) != nil {
+		fmt.Printf("KVServer[%d] decode stateMachineSnapshot failed\n", kv.me)
+		return
+	}
+
+	// 恢复C层状态机
+	if !bridge.Storage_RestoreSnapshot(stateMachineSnapshot) {
+		fmt.Printf("KVServer[%d] restore storage snapshot failed\n", kv.me)
+		return
+	}
+
+	kv.clientSeqTable = clientSeqTable
+	fmt.Printf("KVServer[%d] restored from snapshot\n", kv.me)
 }
 
 var mechineLock sync.RWMutex
@@ -145,6 +207,10 @@ func (kv *KVServer) applyTask() {
 					// 并且把每个通道也存储起来，最后一一的对应返回
 					notifyChs = append(notifyChs, notifyCh)
 				}
+				// 判断是否需要制作快照
+				if kv.maxraftstate != -1 && kv.rf.GetRaftStateSize() >= kv.maxraftstate {
+					kv.makeSnapshot(message.CommandIndex)
+				}
 				kv.mu.Unlock() // [注意] 提前释放锁，防止在net层的死锁！！！
 				// // 在锁外检查是否是 Leader 并发送结果
 				_, isLeader := kv.rf.GetState()
@@ -158,6 +224,14 @@ func (kv *KVServer) applyTask() {
 						}
 					}
 				}
+			} else if message.SnapshotValid {
+				// 处理快照应用
+				kv.mu.Lock()
+				if message.SnapshotIndex > kv.lastApplied {
+					kv.restoreFromSnapshot(message.Snapshot)
+					kv.lastApplied = message.SnapshotIndex
+				}
+				kv.mu.Unlock()
 			}
 		}
 	}

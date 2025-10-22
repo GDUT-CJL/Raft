@@ -27,6 +27,35 @@ var (
 	rocksdbLock  sync.RWMutex
 )
 
+// 创建存储引擎快照
+func Storage_Snapshot() []byte {
+	var cData *C.char
+	var cSize C.size_t
+
+	ret := C.storage_create_snapshot(&cData, &cSize)
+	if ret != 0 || cData == nil {
+		return nil
+	}
+	defer C.storage_free_snapshot(cData)
+
+	// 将C数据转换为Go切片
+	snapshot := C.GoBytes(unsafe.Pointer(cData), C.int(cSize))
+	return snapshot
+}
+
+// 从快照恢复存储引擎
+func Storage_RestoreSnapshot(snapshot []byte) bool {
+	if len(snapshot) == 0 {
+		return false
+	}
+
+	cData := C.CBytes(snapshot)
+	defer C.free(cData)
+
+	ret := C.storage_restore_snapshot((*C.char)(cData), C.size_t(len(snapshot)))
+	return ret == 0
+}
+
 // BinaryToPrintable 将二进制数据转义为可打印字符串
 func BinaryToPrintable(data []byte) string {
 	var builder strings.Builder

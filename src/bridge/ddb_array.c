@@ -1,4 +1,141 @@
 #include "storage.h"
+// 在 ddb_array.c 中添加
+
+// 数组快照：将数组数据序列化为二进制格式
+int array_snapshot(char** data, size_t* size) {
+    if (!data || !size) return -1;
+    
+    pthread_mutex_lock(&array_table->array_mutex);
+    
+    // 计算所需大小：count(4) + 每个元素的(key_len + key + value_len + value + expired)
+    size_t total_size = sizeof(int);
+    for (int i = 0; i < MAX_ARRAY_NUMS; i++) {
+        if (array_table->array[i].key && array_table->array[i].value) {
+            total_size += sizeof(size_t) + array_table->array[i].key->len;
+            total_size += sizeof(size_t) + array_table->array[i].value->len;
+            total_size += sizeof(long long); // expired time
+        }
+    }
+    
+    char* snapshot = (char*)kvs_malloc(total_size);
+    if (!snapshot) {
+        pthread_mutex_unlock(&array_table->array_mutex);
+        return -1;
+    }
+    
+    char* ptr = snapshot;
+    
+    // 写入元素数量
+    int count = array_table->array_count;
+    memcpy(ptr, &count, sizeof(count));
+    ptr += sizeof(count);
+    
+    // 写入每个元素
+    for (int i = 0; i < MAX_ARRAY_NUMS; i++) {
+        if (array_table->array[i].key && array_table->array[i].value) {
+            // 写入key
+            size_t key_len = array_table->array[i].key->len;
+            memcpy(ptr, &key_len, sizeof(key_len));
+            ptr += sizeof(key_len);
+            memcpy(ptr, array_table->array[i].key->data, key_len);
+            ptr += key_len;
+            
+            // 写入value
+            size_t value_len = array_table->array[i].value->len;
+            memcpy(ptr, &value_len, sizeof(value_len));
+            ptr += sizeof(value_len);
+            memcpy(ptr, array_table->array[i].value->data, value_len);
+            ptr += value_len;
+            
+            // 写入过期时间
+            memcpy(ptr, &array_table->array[i].expired, sizeof(long long));
+            ptr += sizeof(long long);
+        }
+    }
+    
+    pthread_mutex_unlock(&array_table->array_mutex);
+    
+    *data = snapshot;
+    *size = total_size;
+    return 0;
+}
+
+// 从快照恢复数组数据
+int array_restore(const char* data, size_t size) {
+    if (!data || size < sizeof(int)) return -1;
+    
+    pthread_mutex_lock(&array_table->array_mutex);
+    
+    const char* ptr = data;
+    
+    // 读取元素数量
+    int count;
+    memcpy(&count, ptr, sizeof(count));
+    ptr += sizeof(count);
+    
+    // 清空现有数组
+    for (int i = 0; i < MAX_ARRAY_NUMS; i++) {
+        if (array_table->array[i].key) {
+            bstring_free(array_table->array[i].key);
+            array_table->array[i].key = NULL;
+        }
+        if (array_table->array[i].value) {
+            bstring_free(array_table->array[i].value);
+            array_table->array[i].value = NULL;
+        }
+    }
+    array_table->array_count = 0;
+    
+    // 恢复每个元素
+    for (int i = 0; i < count; i++) {
+        if (ptr + sizeof(size_t) > data + size) break;
+        
+        // 读取key
+        size_t key_len;
+        memcpy(&key_len, ptr, sizeof(key_len));
+        ptr += sizeof(key_len);
+        
+        if (ptr + key_len > data + size) break;
+        bstring_t* key = bstring_new_from_data(ptr, key_len);
+        ptr += key_len;
+        
+        // 读取value
+        size_t value_len;
+        memcpy(&value_len, ptr, sizeof(value_len));
+        ptr += sizeof(value_len);
+        
+        if (ptr + value_len > data + size) {
+            bstring_free(key);
+            break;
+        }
+        bstring_t* value = bstring_new_from_data(ptr, value_len);
+        ptr += value_len;
+        
+        // 读取过期时间
+        long long expired;
+        if (ptr + sizeof(expired) > data + size) {
+            bstring_free(key);
+            bstring_free(value);
+            break;
+        }
+        memcpy(&expired, ptr, sizeof(expired));
+        ptr += sizeof(expired);
+        
+        // 找到空槽位插入
+        for (int j = 0; j < MAX_ARRAY_NUMS; j++) {
+            if (array_table->array[j].key == NULL) {
+                array_table->array[j].key = key;
+                array_table->array[j].value = value;
+                array_table->array[j].expired = expired;
+                array_table->array_count++;
+                break;
+            }
+        }
+    }
+    
+    pthread_mutex_unlock(&array_table->array_mutex);
+    return 0;
+}
 
 int init_array(){
 	array_table = (kvs_array_t*)kvs_malloc(sizeof(kvs_array_t));

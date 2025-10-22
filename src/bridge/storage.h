@@ -269,6 +269,33 @@ void* jl_calloc(jl_pool_t* pool,int size);
 void jl_free(jl_pool_t* pool,void* p);
 int jl_flush_to_disk(jl_pool_t* pool, const char* filename);
 
+/*------------------------------ Snapshot --------------------------------------*/
+// 快照数据结构
+typedef struct storage_snapshot_s {
+    uint32_t version;
+    uint64_t timestamp;
+} storage_snapshot_t;
+
+// 快照函数声明
+int storage_create_snapshot(char** snapshot_data, size_t* snapshot_size);
+int storage_restore_snapshot(const char* snapshot_data, size_t snapshot_size);
+void storage_free_snapshot(char* snapshot_data);
+
+// 各个数据结构的快照函数
+int array_snapshot(char** data, size_t* size);
+int array_restore(const char* data, size_t size);
+
+int hash_snapshot(char** data, size_t* size);
+int hash_restore(const char* data, size_t size);
+
+// int rbtree_snapshot(char** data, size_t* size);
+// int rbtree_restore(const char* data, size_t size);
+
+int btree_snapshot(char** data, size_t* size);
+int btree_restore(const char* data, size_t size);
+
+// int skiplist_snapshot(char** data, size_t* size);
+// int skiplist_restore(const char* data, size_t size);
 
 #ifdef __cplusplus  
 }  
