@@ -5,15 +5,34 @@ package bridge
 #cgo LDFLAGS: -L. -lstorage
 #include "storage.h"
 #include <stdlib.h>
+
+// 导出C函数，供Go调用
+extern void goLogCallback(char* message, int level);
 */
 import "C"
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
 )
+
+//export goLogCallback
+func goLogCallback(message *C.char, level C.int) {
+	msg := C.GoString(message)
+	switch level {
+	case 0: // DEBUG
+		log.Printf("[STORAGE-DEBUG] %s", msg)
+	case 1: // INFO
+		log.Printf("[STORAGE-INFO] %s", msg)
+	case 2: // WARN
+		log.Printf("[STORAGE-WARN] %s", msg)
+	case 3: // ERROR
+		log.Printf("[STORAGE-ERROR] %s", msg)
+	}
+}
 
 // 为每个数据结构定义独立的读写锁
 // 这里加锁最好是在C层加锁，性能更高
@@ -88,6 +107,11 @@ func InitMemPool() {
 	C.initPool()
 }
 func InitStorage() {
+	// 将Go函数转换为C函数指针
+	callback := (C.LogCallback)(unsafe.Pointer(C.goLogCallback))
+	// 传递给C库
+	C.set_storage_log_callback(callback)
+
 	C.init_btree(C.int(5))
 	C.init_array()
 	C.init_hashtable()

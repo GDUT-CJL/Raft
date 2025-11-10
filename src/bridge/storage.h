@@ -13,12 +13,24 @@ extern "C" {
 #include <sys/time.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <stdarg.h> // for va_list
 #include "rocksdb/c.h" // for rockdb
 #define MAX_MSGBUFFER_LENGTH	1024
 #define MAX_ARRAY_NUMS	102400
 
 void* kvs_malloc(size_t size);
 void kvs_free(void* ptr);
+
+// ------------------------------ cgo_log -------------------------------- //
+// 定义日志回调函数类型
+typedef void (*LogCallback)(const char* message, int level);
+// 设置日志回调函数
+void set_storage_log_callback(LogCallback callback);
+// 日志级别
+#define LOG_DEBUG 0
+#define LOG_INFO 1  
+#define LOG_WARN 2
+#define LOG_ERROR 3
 
 // ------------------------------ bstring -------------------------------- //
 typedef struct{

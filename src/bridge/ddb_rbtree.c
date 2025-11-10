@@ -353,80 +353,106 @@ void dest_rbtree() {
     rb_count = 0;
 }
 
-// 在 ddb_rbtree.c 中添加以下函数
+// 在 ddb_rbtree.c 中添加以下修复后的函数
 
 // 计算红黑树序列化所需大小
 size_t rbtree_calculate_size_node(RBNode* node) {
     if (!node || node == NIL) return 0;
     
-    size_t size = sizeof(node->color);
-    if (node->key && node->value) {
-        size += 2 * sizeof(size_t) + node->key->len + node->value->len;
+    size_t size = sizeof(Color); // 节点颜色
+    size += 2 * sizeof(size_t); // key_len + value_len
+    
+    if (node->key) {
+        size += node->key->len;
+    }
+    if (node->value) {
+        size += node->value->len;
     }
     
+    // 递归计算左右子树
     size += rbtree_calculate_size_node(node->left);
     size += rbtree_calculate_size_node(node->right);
     
     return size;
 }
 
-// 红黑树快照 - 中序遍历序列化
 int rbtree_snapshot_node(RBNode* node, char** ptr, char* end) {
-    if (!node || node == NIL || *ptr >= end) return 0;
-    
-    // 递归序列化左子树
-    if (rbtree_snapshot_node(node->left, ptr, end) != 0) {
-        return -1;
+    if (!node || node == NIL) {
+        // 写入NIL节点标记
+        if (*ptr + sizeof(uint8_t) > end) return -1;
+        uint8_t nil_marker = 0;
+        memcpy(*ptr, &nil_marker, sizeof(nil_marker));
+        *ptr += sizeof(nil_marker);
+        return 0;
     }
     
-    // 序列化当前节点
-    if (*ptr + sizeof(node->color) + 2 * sizeof(size_t) > end) return -1;
+    // 检查剩余空间
+    if (*ptr + sizeof(uint8_t) + sizeof(Color) + 2 * sizeof(size_t) > end) 
+        return -1;
     
-    // 写入节点颜色
+    // 写入节点标记（非NIL节点）
+    uint8_t node_marker = 1;
+    memcpy(*ptr, &node_marker, sizeof(node_marker));
+    *ptr += sizeof(node_marker);
+    
+    // 其余代码保持不变...
     memcpy(*ptr, &node->color, sizeof(node->color));
     *ptr += sizeof(node->color);
     
-    if (node->key && node->value) {
-        // 写入key
-        size_t key_len = node->key->len;
-        memcpy(*ptr, &key_len, sizeof(key_len));
-        *ptr += sizeof(key_len);
-        
+    // 写入key
+    size_t key_len = node->key ? node->key->len : 0;
+    memcpy(*ptr, &key_len, sizeof(key_len));
+    *ptr += sizeof(key_len);
+    
+    if (key_len > 0) {
         if (*ptr + key_len > end) return -1;
         memcpy(*ptr, node->key->data, key_len);
         *ptr += key_len;
-        
-        // 写入value
-        size_t value_len = node->value->len;
-        memcpy(*ptr, &value_len, sizeof(value_len));
-        *ptr += sizeof(value_len);
-        
+    }
+    
+    // 写入value
+    size_t value_len = node->value ? node->value->len : 0;
+    memcpy(*ptr, &value_len, sizeof(value_len));
+    *ptr += sizeof(value_len);
+    
+    if (value_len > 0) {
         if (*ptr + value_len > end) return -1;
         memcpy(*ptr, node->value->data, value_len);
         *ptr += value_len;
-    } else {
-        // 写入空的键值对
-        size_t zero = 0;
-        memcpy(*ptr, &zero, sizeof(zero));
-        *ptr += sizeof(zero);
-        memcpy(*ptr, &zero, sizeof(zero));
-        *ptr += sizeof(zero);
     }
     
-    // 递归序列化右子树
-    if (rbtree_snapshot_node(node->right, ptr, end) != 0) {
-        return -1;
-    }
+    // 递归序列化左右子树
+    if (rbtree_snapshot_node(node->left, ptr, end) != 0) return -1;
+    if (rbtree_snapshot_node(node->right, ptr, end) != 0) return -1;
     
     return 0;
 }
 
 // 红黑树快照主函数
 int rbtree_snapshot(char** data, size_t* size) {
-    if (!data || !size || !root || root == NIL) return -1;
+    if (!data || !size) {
+        return -1;
+    }
     
-    // 计算总大小：元素总数 + 树结构
-    *size = sizeof(int) + rbtree_calculate_size_node(root);
+    // 如果树为空，特殊处理
+    if (!root || root == NIL) {
+        *size = sizeof(int) + sizeof(uint8_t); // count + end marker
+        *data = (char*)kvs_malloc(*size);
+        if (!*data) return -1;
+        
+        // 写入元素总数（0）
+        int count = 0;
+        memcpy(*data, &count, sizeof(count));
+        
+        // 写入结束标记
+        uint8_t end_marker = 0;
+        memcpy(*data + sizeof(count), &end_marker, sizeof(end_marker));
+        
+        return 0;
+    }
+    
+    // 计算总大小
+    *size = sizeof(int) + rbtree_calculate_size_node(root) + sizeof(uint8_t);
     *data = (char*)kvs_malloc(*size);
     if (!*data) return -1;
     
@@ -441,30 +467,45 @@ int rbtree_snapshot(char** data, size_t* size) {
     if (rbtree_snapshot_node(root, &ptr, end) != 0) {
         kvs_free(*data);
         *data = NULL;
+        *size = 0;
         return -1;
     }
+    
+    // 写入结束标记
+    uint8_t end_marker = 0;
+    if (ptr + sizeof(end_marker) > end) {
+        kvs_free(*data);
+        *data = NULL;
+        *size = 0;
+        return -1;
+    }
+    memcpy(ptr, &end_marker, sizeof(end_marker));
     
     return 0;
 }
 
 // 红黑树恢复 - 反序列化节点
 RBNode* rbtree_restore_node(const char** ptr, const char* end) {
-    if (!ptr || !*ptr || *ptr >= end) return NIL;
+    if (!ptr || !*ptr || *ptr >= end) return NULL;
     
-    // 递归恢复左子树
-    RBNode* left = rbtree_restore_node(ptr, end);
-    if (!left && left != NIL) return NULL;
+    // 读取节点标记
+    uint8_t node_marker;
+    if (*ptr + sizeof(node_marker) > end) return NULL;
+    memcpy(&node_marker, *ptr, sizeof(node_marker));
+    *ptr += sizeof(node_marker);
     
-    // 读取当前节点
-    if (*ptr + sizeof(Color) + 2 * sizeof(size_t) > end) return NULL;
+    // 如果是结束标记，返回NIL
+    if (node_marker == 0) return NIL;
     
     // 读取节点颜色
     Color color;
+    if (*ptr + sizeof(color) > end) return NULL;
     memcpy(&color, *ptr, sizeof(color));
     *ptr += sizeof(color);
     
     // 读取key
     size_t key_len;
+    if (*ptr + sizeof(key_len) > end) return NULL;
     memcpy(&key_len, *ptr, sizeof(key_len));
     *ptr += sizeof(key_len);
     
@@ -472,11 +513,16 @@ RBNode* rbtree_restore_node(const char** ptr, const char* end) {
     if (key_len > 0) {
         if (*ptr + key_len > end) return NULL;
         key = bstring_new_from_data(*ptr, key_len);
+        if (!key) return NULL;
         *ptr += key_len;
     }
     
     // 读取value
     size_t value_len;
+    if (*ptr + sizeof(value_len) > end) {
+        if (key) bstring_free(key);
+        return NULL;
+    }
     memcpy(&value_len, *ptr, sizeof(value_len));
     *ptr += sizeof(value_len);
     
@@ -487,6 +533,10 @@ RBNode* rbtree_restore_node(const char** ptr, const char* end) {
             return NULL;
         }
         value = bstring_new_from_data(*ptr, value_len);
+        if (!value) {
+            if (key) bstring_free(key);
+            return NULL;
+        }
         *ptr += value_len;
     }
     
@@ -498,6 +548,13 @@ RBNode* rbtree_restore_node(const char** ptr, const char* end) {
         return NULL;
     }
     node->color = color;
+    
+    // 递归恢复左子树
+    RBNode* left = rbtree_restore_node(ptr, end);
+    if (!left && left != NIL) {
+        kvs_free(node);
+        return NULL;
+    }
     node->left = left;
     if (left != NIL) {
         left->parent = node;
@@ -506,7 +563,11 @@ RBNode* rbtree_restore_node(const char** ptr, const char* end) {
     // 递归恢复右子树
     RBNode* right = rbtree_restore_node(ptr, end);
     if (!right && right != NIL) {
-        // 清理已创建的节点
+        // 清理已创建的节点和子树
+        if (left != NIL) {
+            // 需要递归释放左子树
+            destroy_rbtree_subtree(left);
+        }
         kvs_free(node);
         return NULL;
     }
@@ -532,10 +593,10 @@ int rbtree_restore(const char* data, size_t size) {
     
     // 清空现有红黑树
     if (root && root != NIL) {
-        dest_rbtree(); // 注意：这会释放整个树，但需要重新初始化NIL
+        destroy_rbtree_subtree(root);
     }
     
-    // 重新初始化NIL
+    // 重新初始化NIL（如果还没有）
     if (!NIL) {
         initNIL();
     }
@@ -543,6 +604,9 @@ int rbtree_restore(const char* data, size_t size) {
     // 恢复树结构
     RBNode* new_root = rbtree_restore_node(&ptr, end);
     if (!new_root) {
+        // 恢复失败，确保root设置为NIL
+        root = NIL;
+        rb_count = 0;
         return -1;
     }
     
