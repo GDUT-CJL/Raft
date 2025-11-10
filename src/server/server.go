@@ -110,6 +110,7 @@ func (kv *KVServer) makeSnapshot(index int) {
 		return
 	}
 
+	// 调用Raft层快照
 	snapshot := w.Bytes()
 	kv.rf.Snapshot(index, snapshot)
 	fmt.Printf("KVServer[%d] made snapshot at index %d, size: %d\n", kv.me, index, len(snapshot))

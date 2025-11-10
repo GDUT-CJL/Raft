@@ -288,14 +288,14 @@ int array_restore(const char* data, size_t size);
 int hash_snapshot(char** data, size_t* size);
 int hash_restore(const char* data, size_t size);
 
-// int rbtree_snapshot(char** data, size_t* size);
-// int rbtree_restore(const char* data, size_t size);
+int rbtree_snapshot(char** data, size_t* size);
+int rbtree_restore(const char* data, size_t size);
 
 int btree_snapshot(char** data, size_t* size);
 int btree_restore(const char* data, size_t size);
 
-// int skiplist_snapshot(char** data, size_t* size);
-// int skiplist_restore(const char* data, size_t size);
+int skiplist_snapshot(char** data, size_t* size);
+int skiplist_restore(const char* data, size_t size);
 
 #ifdef __cplusplus  
 }  

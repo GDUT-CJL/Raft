@@ -72,32 +72,53 @@ int dest_sklistable_node(skipnode_t* node){
 }
 
 int dest_skiplist(){
-    if(sklist == NULL) return -1;
+    if (!sklist) return -1;
+    
     // 删除所有数据节点
-    skipnode_t* cur_node = sklist->head->next[0];// 指向跳表最底层的第一个数据节点
-    skipnode_t* nxt_node = cur_node->next[0];// 指向cur_node的下一个节点
-    while(cur_node != NULL){
-        // 调整信息
-        for(int i=0; i<sklist->max_level; i++){
-            sklist->head->next[i] = cur_node->next[i];
+    skipnode_t* cur_node = sklist->head->next[0];
+    while (cur_node != NULL) {
+        skipnode_t* next_node = cur_node->next[0];
+        
+        // 释放键值对
+        if (cur_node->key) {
+            bstring_free(cur_node->key);
+            cur_node->key = NULL;
         }
-        sklist->nodeNum--;
-        // 开始删除
-        nxt_node = cur_node->next[0];
-        if(dest_sklistable_node(cur_node) != 0){
-            return -1;
+        if (cur_node->value) {
+            bstring_free(cur_node->value);
+            cur_node->value = NULL;
         }
-        cur_node = nxt_node;
+        
+        // 释放next指针数组
+        if (cur_node->next) {
+            kvs_free(cur_node->next);
+            cur_node->next = NULL;
+        }
+        
+        // 释放节点本身
+        kvs_free(cur_node);
+        cur_node = next_node;
     }
+    
     // 删除头节点
-    if(sklist->head){
-        kvs_free(sklist->head->next);
-        sklist->head->next = NULL;
+    if (sklist->head) {
+        if (sklist->head->next) {
+            kvs_free(sklist->head->next);
+            sklist->head->next = NULL;
+        }
         kvs_free(sklist->head);
         sklist->head = NULL;
     }
-    sklist->nodeNum = 0;
+    
+    // 重置跳表状态
+    sklist->max_level = 0;
     sklist->cur_level = 0;
+    sklist->nodeNum = 0;
+    
+    // 释放跳表结构本身
+    kvs_free(sklist);
+    sklist = NULL;
+    
     return 0;
 }
 
@@ -226,5 +247,198 @@ int zexist(char* key,size_t klen){
     if(kvs_skiplist_search(bkey) == NULL){
         return -1;
     }
+    return 0;
+}
+
+// 在 ddb_skiplist.c 中添加以下函数
+
+// 计算跳表序列化所需大小
+size_t skiplist_calculate_size() {
+    if (!sklist || !sklist->head) return 0;
+    
+    size_t size = sizeof(int) * 3; // max_level, cur_level, nodeNum
+    size += sizeof(sklist->nodeNum); // 节点数量
+    
+    // 遍历最底层计算所有节点的键值对大小
+    skipnode_t* current = sklist->head->next[0];
+    while (current) {
+        if (current->key && current->value) {
+            size += sizeof(int); // 节点层数
+            size += 2 * sizeof(size_t); // key_len + value_len
+            size += current->key->len + current->value->len;
+        }
+        current = current->next[0];
+    }
+    
+    return size;
+}
+
+// 跳表快照 - 按最底层顺序序列化
+int skiplist_snapshot(char** data, size_t* size) {
+    if (!data || !size || !sklist || !sklist->head) return -1;
+    
+    // 计算总大小
+    *size = skiplist_calculate_size();
+    *data = (char*)kvs_malloc(*size);
+    if (!*data) return -1;
+    
+    char* ptr = *data;
+    char* end = *data + *size;
+    
+    // 写入跳表基本信息
+    memcpy(ptr, &sklist->max_level, sizeof(sklist->max_level));
+    ptr += sizeof(sklist->max_level);
+    memcpy(ptr, &sklist->cur_level, sizeof(sklist->cur_level));
+    ptr += sizeof(sklist->cur_level);
+    memcpy(ptr, &sklist->nodeNum, sizeof(sklist->nodeNum));
+    ptr += sizeof(sklist->nodeNum);
+    
+    // 写入节点数量
+    int node_count = sklist->nodeNum;
+    memcpy(ptr, &node_count, sizeof(node_count));
+    ptr += sizeof(node_count);
+    
+    // 按最底层顺序序列化所有节点
+    skipnode_t* current = sklist->head->next[0];
+    while (current && ptr < end) {
+        if (!current->key || !current->value) {
+            current = current->next[0];
+            continue;
+        }
+        
+        // 计算当前节点的实际层数
+        int node_level = 0;
+        for (int i = 0; i < sklist->max_level; i++) {
+            if (i < sklist->cur_level && current->next[i] != NULL) {
+                node_level = i + 1;
+            }
+        }
+        if (node_level == 0) node_level = 1; // 至少有一层
+        
+        // 写入节点层数
+        if (ptr + sizeof(int) > end) break;
+        memcpy(ptr, &node_level, sizeof(node_level));
+        ptr += sizeof(node_level);
+        
+        // 写入key
+        size_t key_len = current->key->len;
+        if (ptr + sizeof(size_t) > end) break;
+        memcpy(ptr, &key_len, sizeof(key_len));
+        ptr += sizeof(key_len);
+        
+        if (ptr + key_len > end) break;
+        memcpy(ptr, current->key->data, key_len);
+        ptr += key_len;
+        
+        // 写入value
+        size_t value_len = current->value->len;
+        if (ptr + sizeof(size_t) > end) break;
+        memcpy(ptr, &value_len, sizeof(value_len));
+        ptr += sizeof(value_len);
+        
+        if (ptr + value_len > end) break;
+        memcpy(ptr, current->value->data, value_len);
+        ptr += value_len;
+        
+        current = current->next[0];
+    }
+    
+    // 检查是否成功序列化了所有节点
+    if (current != NULL) {
+        kvs_free(*data);
+        *data = NULL;
+        return -1;
+    }
+    
+    return 0;
+}
+
+// 跳表恢复 - 反序列化
+int skiplist_restore(const char* data, size_t size) {
+    if (!data || size < sizeof(int) * 4) return -1;
+    
+    const char* ptr = data;
+    const char* end = data + size;
+    
+    // 读取跳表基本信息
+    int max_level, cur_level, nodeNum, node_count;
+    memcpy(&max_level, ptr, sizeof(max_level));
+    ptr += sizeof(max_level);
+    memcpy(&cur_level, ptr, sizeof(cur_level));
+    ptr += sizeof(cur_level);
+    memcpy(&nodeNum, ptr, sizeof(nodeNum));
+    ptr += sizeof(nodeNum);
+    memcpy(&node_count, ptr, sizeof(node_count));
+    ptr += sizeof(node_count);
+    
+    // 清空现有跳表
+    if (sklist) {
+        dest_skiplist();
+    } else {
+        // 初始化跳表
+        if (init_skipTable() != 0) return -1;
+    }
+    
+    // 恢复所有节点
+    for (int i = 0; i < node_count && ptr < end; i++) {
+        // 读取节点层数
+        int node_level;
+        if (ptr + sizeof(int) > end) break;
+        memcpy(&node_level, ptr, sizeof(node_level));
+        ptr += sizeof(node_level);
+        
+        // 读取key
+        size_t key_len;
+        if (ptr + sizeof(size_t) > end) break;
+        memcpy(&key_len, ptr, sizeof(key_len));
+        ptr += sizeof(key_len);
+        
+        if (ptr + key_len > end) break;
+        char* key_data = (char*)kvs_malloc(key_len + 1);
+        if (!key_data) break;
+        memcpy(key_data, ptr, key_len);
+        key_data[key_len] = '\0';
+        ptr += key_len;
+        
+        // 读取value
+        size_t value_len;
+        if (ptr + sizeof(size_t) > end) {
+            kvs_free(key_data);
+            break;
+        }
+        memcpy(&value_len, ptr, sizeof(value_len));
+        ptr += sizeof(value_len);
+        
+        if (ptr + value_len > end) {
+            kvs_free(key_data);
+            break;
+        }
+        char* value_data = (char*)kvs_malloc(value_len + 1);
+        if (!value_data) {
+            kvs_free(key_data);
+            break;
+        }
+        memcpy(value_data, ptr, value_len);
+        value_data[value_len] = '\0';
+        ptr += value_len;
+        
+        // 插入节点到跳表
+        if (zset(key_data, key_len, value_data, value_len) != 0) {
+            kvs_free(key_data);
+            kvs_free(value_data);
+            break;
+        }
+        
+        kvs_free(key_data);
+        kvs_free(value_data);
+    }
+    
+    // 验证恢复的节点数量
+    if (sklist->nodeNum != node_count) {
+        // 恢复不完整，清理部分恢复的数据
+        dest_skiplist();
+        return -1;
+    }
+    
     return 0;
 }

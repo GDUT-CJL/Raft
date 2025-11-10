@@ -31,9 +31,9 @@ int storage_create_snapshot(char** snapshot_data, size_t* snapshot_size) {
     int ret = 0;
     ret |= array_snapshot(&array_data, &array_size);
     ret |= hash_snapshot(&hash_data, &hash_size);
-    // ret |= rbtree_snapshot(&rbtree_data, &rbtree_size);
+    ret |= rbtree_snapshot(&rbtree_data, &rbtree_size);
     ret |= btree_snapshot(&btree_data, &btree_size);
-    // ret |= skiplist_snapshot(&skiplist_data, &skiplist_size);
+    ret |= skiplist_snapshot(&skiplist_data, &skiplist_size);
     
     if (ret != 0) goto error;
     
@@ -158,7 +158,14 @@ int storage_restore_snapshot(const char* snapshot_data, size_t snapshot_size) {
         ret |= btree_restore(ptr, btree_size);
         ptr += btree_size;
     }
-    
+    if (skiplist_size > 0) {
+        ret |= skiplist_restore(ptr, btree_size);
+        ptr += btree_size;
+    }
+    if (rbtree_size > 0) {
+        ret |= rbtree_restore(ptr, btree_size);
+        ptr += btree_size;
+    }
     return ret;
 }
 
