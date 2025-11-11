@@ -1,20 +1,33 @@
 package raft
 
 import (
-	"bytes"
 	"context"
-	"course/labgob"
 	//"encoding/json"
-	"fmt"
+
 	"sort"
 	"time"
 )
 
+type OperationType uint32
+type Op struct {
+	// Your definitions here.
+	// Field names must start with capital letters,
+	// otherwise RPC will break.
+	Key    string
+	Klen   int
+	Value  string
+	Vlen   int
+	OpType OperationType
+	// 每次请求都会生成ClientId和SeqId
+	// ClientId和SeqId确定唯一的一次请求避免重复请求
+	ClientId int64
+	SeqId    int64
+}
 type LogEntry struct {
-	Term         int           // 日志对应server的任期号
-	Command      []interface{} // 客户端的具体命令
-	CommandValid bool          // 标记该消息是否为有效的日志命令（true=有效，false=无效，如快照消息）。
-	CommandIndex int           // 日志的索引（即 Raft 日志中的位置），用于保证顺序性。
+	Term         int  // 日志对应server的任期号
+	Command      []Op // 客户端的具体命令
+	CommandValid bool // 标记该消息是否为有效的日志命令（true=有效，false=无效，如快照消息）。
+	CommandIndex int  // 日志的索引（即 Raft 日志中的位置），用于保证顺序性。
 }
 
 type AppendEntriesArgs struct {
@@ -110,22 +123,25 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 func convertToGrpcLogEntries(entries []LogEntry) []*G_LogEntry {
 	grpcEntries := make([]*G_LogEntry, len(entries))
 	for i, entry := range entries {
-		var cmdData []byte
-		if entry.Command != nil {
-			// 使用 labgob 进行序列化
-			var buf bytes.Buffer
-			encoder := labgob.NewEncoder(&buf)
-			if err := encoder.Encode(entry.Command); err != nil {
-				fmt.Printf("Failed to encode command with labgob: %v\n", err)
-				cmdData = []byte{} // 错误处理
-			} else {
-				cmdData = buf.Bytes()
-			}
+		// 直接转换，无需序列化
+		var grpcOps []*G_Op
+		for _, op := range entry.Command {
+			grpcOps = append(grpcOps, &G_Op{
+				ClientId: op.ClientId,
+				SeqId:    op.SeqId,
+				OpType:   uint32(op.OpType),
+				Key:      op.Key,
+				Value:    op.Value,
+				Klen:     int64(op.Klen),
+				Vlen:     int64(op.Vlen),
+			})
 		}
+
 		grpcEntries[i] = &G_LogEntry{
-			Term:         int64(entry.Term),
+			Term:         int32(entry.Term),
 			CommandValid: entry.CommandValid,
-			Command:      cmdData,
+			Command:      grpcOps,
+			CommandIndex: int32(entry.CommandIndex),
 		}
 	}
 	return grpcEntries

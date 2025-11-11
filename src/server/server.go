@@ -64,7 +64,7 @@ func (kv *KVServer) Unlock() {
 func StartKVServer(servers []string, me int, maxraftstate int) *KVServer {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
-	labgob.Register(Op{})
+	labgob.Register(raft.Op{})
 
 	kv := new(KVServer)
 	kv.me = me
@@ -162,29 +162,20 @@ func (kv *KVServer) applyTask() {
 				kv.lastApplied = message.CommandIndex
 				var opReplies []*OpReply
 				var notifyChs []chan *OpReply
-				fmt.Printf("Type of command: %T\n", message.Command)
+				// fmt.Printf("Type of command: %T\n", message.Command)
 				for _, opInterface := range message.Command {
-					var op Op
-					switch cmd := opInterface.(type) {
-					case Op:
-						op = cmd
-					default:
-						// 其他类型不处理
-						kv.mu.Unlock()
-						continue
-					}
 					var opReply *OpReply
-					if kv.requestDuplicated(op.ClientId, op.SeqId) {
-						opReply = kv.clientSeqTable[op.ClientId].Reply
+					if kv.requestDuplicated(opInterface.ClientId, opInterface.SeqId) {
+						opReply = kv.clientSeqTable[opInterface.ClientId].Reply
 						fmt.Println("重复请求")
 					} else {
 						// 应用到状态机中
 						mechineLock.Lock()
-						opReply = kv.applyToStateMachine(op)
+						opReply = kv.applyToStateMachine(opInterface)
 						mechineLock.Unlock()
 						// 更新clientSeqTable数据
-						kv.clientSeqTable[op.ClientId] = LastOperationInfo{
-							SeqId: op.SeqId,
+						kv.clientSeqTable[opInterface.ClientId] = LastOperationInfo{
+							SeqId: opInterface.SeqId,
 							Reply: opReply,
 						}
 					}
@@ -225,7 +216,7 @@ func (kv *KVServer) applyTask() {
 	}
 }
 
-func (kv *KVServer) applyToStateMachine(op Op) *OpReply {
+func (kv *KVServer) applyToStateMachine(op raft.Op) *OpReply {
 	var value int
 	var err string
 	switch op.OpType {

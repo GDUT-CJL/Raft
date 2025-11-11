@@ -20,7 +20,7 @@ import (
 type BatchManager struct {
 	batchSize      int
 	batchTimeout   time.Duration
-	batchBufferMap map[net.Conn][]server.Op
+	batchBufferMap map[net.Conn][]raft.Op
 	batchMutex     *sync.RWMutex
 }
 
@@ -38,7 +38,7 @@ func InitBatchManager(batchSize int, batchTimeout time.Duration) {
 	globalBatchManager = &BatchManager{
 		batchSize:      batchSize,
 		batchTimeout:   batchTimeout,
-		batchBufferMap: make(map[net.Conn][]server.Op),
+		batchBufferMap: make(map[net.Conn][]raft.Op),
 		batchMutex:     &sync.RWMutex{},
 	}
 }
@@ -87,19 +87,12 @@ func generateClientID(conn net.Conn) int64 {
 }
 
 // sendBatch 修改为使用批量管理器
-func sendBatch(kv *server.KVServer, conn net.Conn, batch []server.Op, rf *raft.Raft) {
+func sendBatch(kv *server.KVServer, conn net.Conn, batch []raft.Op, rf *raft.Raft) {
 	if len(batch) == 0 {
 		conn.Write([]byte("EMPTY_BATCH\n"))
 		return
 	}
-
-	// Convert batch to []interface{}
-	batchInterface := make([]interface{}, len(batch))
-	for i, op := range batch {
-		batchInterface[i] = op
-	}
-
-	index, _, isLeader := rf.Start(batchInterface)
+	index, _, isLeader := rf.Start(batch)
 	if !isLeader {
 		conn.Write([]byte("NOT_LEADER\n"))
 		return
@@ -131,7 +124,7 @@ func flushBatch(kv *server.KVServer, conn net.Conn, rf *raft.Raft) {
 
 	batch := bm.batchBufferMap[conn]
 	if len(batch) > 0 {
-		batchToSend := make([]server.Op, len(batch))
+		batchToSend := make([]raft.Op, len(batch))
 		copy(batchToSend, batch)
 		bm.batchBufferMap[conn] = nil
 		go sendBatch(kv, conn, batchToSend, rf)
@@ -139,19 +132,19 @@ func flushBatch(kv *server.KVServer, conn net.Conn, rf *raft.Raft) {
 }
 
 // addToBatch 修改为使用批量管理器
-func addToBatch(op server.Op, conn net.Conn, kv *server.KVServer, rf *raft.Raft) {
+func addToBatch(op raft.Op, conn net.Conn, kv *server.KVServer, rf *raft.Raft) {
 	bm := GetBatchManager()
 	bm.batchMutex.Lock()
 	defer bm.batchMutex.Unlock()
 
 	if _, exists := bm.batchBufferMap[conn]; !exists {
-		bm.batchBufferMap[conn] = make([]server.Op, 0, bm.batchSize)
+		bm.batchBufferMap[conn] = make([]raft.Op, 0, bm.batchSize)
 	}
 
 	bm.batchBufferMap[conn] = append(bm.batchBufferMap[conn], op)
 
 	if len(bm.batchBufferMap[conn]) >= bm.batchSize {
-		batch := make([]server.Op, len(bm.batchBufferMap[conn]))
+		batch := make([]raft.Op, len(bm.batchBufferMap[conn]))
 		copy(batch, bm.batchBufferMap[conn])
 		bm.batchBufferMap[conn] = nil
 		go sendBatch(kv, conn, batch, rf)
@@ -159,7 +152,7 @@ func addToBatch(op server.Op, conn net.Conn, kv *server.KVServer, rf *raft.Raft)
 }
 
 // Commited 函数修改为使用批量管理器
-func Commited(optype server.OperationType, key string, klen int, value string, vlen int, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
+func Commited(optype raft.OperationType, key string, klen int, value string, vlen int, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
 	var peer int
 	if _, isLeader := rf.GetState(); !isLeader {
 		for peer = 0; peer < rf.GetPeerLen(); peer++ {
@@ -172,7 +165,7 @@ func Commited(optype server.OperationType, key string, klen int, value string, v
 		return
 	}
 
-	op := server.Op{
+	op := raft.Op{
 		OpType:   optype,
 		Key:      key,
 		Klen:     klen,

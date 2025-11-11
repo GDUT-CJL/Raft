@@ -67,7 +67,7 @@ const (
 // other uses.
 type ApplyMsg struct {
 	CommandValid bool // 用于区分 普通日志命令 和 其他类型的消息（如快照）。
-	Command      []interface{}
+	Command      []Op
 	CommandIndex int
 
 	// For PartD:
@@ -223,7 +223,7 @@ func (rf *Raft) GetState() (int, bool) {
 // if it's ever committed. the second return value is the current
 // term. the third return value is true if this server believes it is
 // the leader.
-func (rf *Raft) Start(command []interface{}) (int, int, bool) {
+func (rf *Raft) Start(command []Op) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 

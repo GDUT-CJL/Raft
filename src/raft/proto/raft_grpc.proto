@@ -14,6 +14,17 @@ service RaftGrpc{
 }
 //message关键字，其实你可以理解为Go1ang中的结构体。
 //这里比较特别的是变量后面的“赋值”。注意，这里并不是赋值，而是在定义这个变量在这个message中的位置。
+
+message G_Op {
+    int64 ClientId = 1;
+    int64 SeqId = 2;
+    uint32 OpType = 3;
+    string Key = 4;
+    string Value = 5;
+    int64 Klen = 6;
+    int64 Vlen = 7;
+}
+
 message G_RequestVoteArgs{
 	int32 Term = 1;
 	int32 CandidateId = 2;
@@ -26,9 +37,10 @@ message G_RequestVoteReply{
 }
 
 message G_LogEntry {
-  	int64 Term = 1;
-  	bool CommandValid = 2;
-  	bytes Command = 3;  // 使用 bytes 类型代替 []interface{}
+    int32 Term = 1;
+    bool CommandValid = 2;
+    repeated G_Op Command = 3;  // 直接使用 Op 数组
+    int32 CommandIndex = 4;
 }
 message G_AppendEntriesArgs{
   	int64 Term = 1;

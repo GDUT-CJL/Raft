@@ -1,10 +1,7 @@
 package raft
 
 import (
-	"bytes"
 	"context"
-	"course/labgob"
-	"fmt"
 )
 
 type RaftServer struct {
@@ -39,20 +36,24 @@ func (s *RaftServer) Grpc_RequestVote(ctx context.Context, req *G_RequestVoteArg
 func convertFromGrpcLogEntries(grpcEntries []*G_LogEntry) []LogEntry {
 	entries := make([]LogEntry, len(grpcEntries))
 	for i, grpcEntry := range grpcEntries {
-		var cmd []interface{}
-		if len(grpcEntry.Command) > 0 {
-			// 使用 labgob 反序列化而不是 JSON
-			r := bytes.NewReader(grpcEntry.Command)
-			d := labgob.NewDecoder(r)
-			if err := d.Decode(&cmd); err != nil {
-				fmt.Printf("Failed to decode command: %v\n", err)
-				continue
-			}
+		var ops []Op
+		for _, grpcOp := range grpcEntry.Command {
+			ops = append(ops, Op{
+				ClientId: grpcOp.ClientId,
+				SeqId:    grpcOp.SeqId,
+				OpType:   OperationType(grpcOp.OpType),
+				Key:      grpcOp.Key,
+				Value:    grpcOp.Value,
+				Klen:     int(grpcOp.Klen),
+				Vlen:     int(grpcOp.Vlen),
+			})
 		}
+
 		entries[i] = LogEntry{
 			Term:         int(grpcEntry.Term),
 			CommandValid: grpcEntry.CommandValid,
-			Command:      cmd,
+			Command:      ops,
+			CommandIndex: int(grpcEntry.CommandIndex),
 		}
 	}
 	return entries
