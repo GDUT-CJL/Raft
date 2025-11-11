@@ -15,17 +15,13 @@ extern "C" {
 #include <ctype.h>
 #include <stdarg.h> // for va_list
 #include "rocksdb/c.h" // for rockdb
-#define MAX_MSGBUFFER_LENGTH	1024
-#define MAX_ARRAY_NUMS	102400
-
-void* kvs_malloc(size_t size);
-void kvs_free(void* ptr);
 
 // ------------------------------ cgo_log -------------------------------- //
 // 定义日志回调函数类型
 typedef void (*LogCallback)(const char* message, int level);
 // 设置日志回调函数
 void set_storage_log_callback(LogCallback callback);
+void storage_log(const char* format, int level, ...);
 // 日志级别
 #define LOG_DEBUG 0
 #define LOG_INFO 1  
@@ -79,6 +75,7 @@ void bstring_print_detailed(const bstring_t *bs);
 char* bstring_to_cstr(const bstring_t* bs);
 
 // ------------------------------ array -------------------------------- //
+#define MAX_ARRAY_NUMS	102400
 typedef struct kvs_array_item_s{
 	bstring_t* key;
 	bstring_t* value;
@@ -229,7 +226,8 @@ int kvs_rocksdb_batch_set(const char** keys, const char** values, int count);
 
 /*------------------------------ mempool --------------------------------------*/
 #include <stdint.h>
-
+void* kvs_malloc(size_t size);
+void kvs_free(void* ptr);
 // mempool
 #define JL_MP_ALIGNMENT     32
 #define JL_MAX_POOLSIZE     4096

@@ -227,6 +227,11 @@ func (rf *Raft) Start(command []interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	var buf bytes.Buffer
+	encoder := labgob.NewEncoder(&buf)
+	if err := encoder.Encode(command); err != nil {
+		return -1, -1, false
+	}
 	// 只有leader节点才能够操作日志，无论是set或者get等其他操作都必须是leader操作
 	if rf.role != Leader {
 		return 0, 0, false

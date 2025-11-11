@@ -28,7 +28,7 @@ message G_RequestVoteReply{
 message G_LogEntry {
   	int64 Term = 1;
   	bool CommandValid = 2;
-  	bytes Command = 3;  // 使用 bytes 类型代替 interface{}
+  	bytes Command = 3;  // 使用 bytes 类型代替 []interface{}
 }
 message G_AppendEntriesArgs{
   	int64 Term = 1;

@@ -67,16 +67,23 @@ func (bm *BatchManager) UpdateBatchParams(batchSize int, batchTimeout time.Durat
 	bm.batchTimeout = batchTimeout
 }
 
-// 原有的 generateSeqID 和 generateClientID 保持不变
+// 基于时间戳生成序列ID（毫秒级）
 func generateSeqID() int64 {
-	return atomic.AddInt64(&seqIDCounter, 1)
+	now := time.Now().UnixNano() / 1e6               // 毫秒时间戳
+	seq := atomic.AddInt64(&seqIDCounter, 1) & 0xFFF // 12位序列号
+	return (now << 12) | seq                         // 时间戳左移12位，低12位为序列号
 }
 
+// 基于时间生成客户端ID
 func generateClientID(conn net.Conn) int64 {
 	addr := conn.RemoteAddr().(*net.TCPAddr).IP.String()
 	hash := fnv.New64a()
 	hash.Write([]byte(addr))
-	return int64(hash.Sum64()) ^ (atomic.AddInt64(&clientIDCounter, 1) << 32)
+
+	now := time.Now().UnixNano() / 1e6                         // 毫秒时间戳
+	clientSeq := atomic.AddInt64(&clientIDCounter, 1) & 0xFFFF // 16位序列号
+
+	return now ^ (int64(hash.Sum64()) & 0xFFFF) ^ (clientSeq << 32)
 }
 
 // sendBatch 修改为使用批量管理器

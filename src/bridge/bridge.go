@@ -21,6 +21,7 @@ import (
 
 //export goLogCallback
 func goLogCallback(message *C.char, level C.int) {
+	// 这个函数在Go中实现，但可以被C调用
 	msg := C.GoString(message)
 	switch level {
 	case 0: // DEBUG

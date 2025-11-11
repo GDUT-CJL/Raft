@@ -1,9 +1,11 @@
 package raft
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
-	//"fmt"
+	"course/labgob"
+	//"encoding/json"
+	"fmt"
 	"sort"
 	"time"
 )
@@ -110,10 +112,14 @@ func convertToGrpcLogEntries(entries []LogEntry) []*G_LogEntry {
 	for i, entry := range entries {
 		var cmdData []byte
 		if entry.Command != nil {
-			var err error
-			cmdData, err = json.Marshal(entry.Command)
-			if err != nil {
+			// 使用 labgob 进行序列化
+			var buf bytes.Buffer
+			encoder := labgob.NewEncoder(&buf)
+			if err := encoder.Encode(entry.Command); err != nil {
+				fmt.Printf("Failed to encode command with labgob: %v\n", err)
 				cmdData = []byte{} // 错误处理
+			} else {
+				cmdData = buf.Bytes()
 			}
 		}
 		grpcEntries[i] = &G_LogEntry{
@@ -123,7 +129,6 @@ func convertToGrpcLogEntries(entries []LogEntry) []*G_LogEntry {
 		}
 	}
 	return grpcEntries
-
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {

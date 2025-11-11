@@ -21,25 +21,6 @@ void kvs_free(void* ptr){
 	}
 }
 
-static LogCallback g_log_callback = NULL;
-
-void set_storage_log_callback(LogCallback callback) {
-    g_log_callback = callback;
-}
-
-// 内部日志函数
-void storage_log(const char* format, int level, ...) {
-    if (!g_log_callback) return;
-    
-    char buffer[1024];
-    va_list args;
-    va_start(args, level);
-    vsnprintf(buffer, sizeof(buffer), format, args);
-    va_end(args);
-    
-    g_log_callback(buffer, level);
-}
-
 // 创建整个存储引擎的快照
 int storage_create_snapshot(char** snapshot_data, size_t* snapshot_size) {
     if (!snapshot_data || !snapshot_size) {
@@ -52,26 +33,26 @@ int storage_create_snapshot(char** snapshot_data, size_t* snapshot_size) {
     size_t array_size = 0, hash_size = 0, rbtree_size = 0, btree_size = 0, skiplist_size = 0;
     
     int ret = 0;
-    storage_log("Creating array snapshot...", LOG_DEBUG);
+    // storage_log("Creating array snapshot...", LOG_DEBUG);
     ret |= array_snapshot(&array_data, &array_size);
-    storage_log("array_snapshot result: ret=%d, size=%zu", LOG_DEBUG, ret, array_size);
+    // storage_log("array_snapshot result: ret=%d, size=%zu", LOG_DEBUG, ret, array_size);
     
-    storage_log("Creating hash snapshot...", LOG_DEBUG);
+    // storage_log("Creating hash snapshot...", LOG_DEBUG);
     ret |= hash_snapshot(&hash_data, &hash_size);
-    storage_log("hash_snapshot result: ret=%d, size=%zu", LOG_DEBUG, ret, hash_size);
+    // storage_log("hash_snapshot result: ret=%d, size=%zu", LOG_DEBUG, ret, hash_size);
     
-    storage_log("Creating rbtree snapshot...", LOG_DEBUG);
+    // storage_log("Creating rbtree snapshot...", LOG_DEBUG);
     ret |= rbtree_snapshot(&rbtree_data, &rbtree_size);
-    storage_log("rbtree_snapshot result: ret=%d, size=%zu", LOG_DEBUG, ret, rbtree_size);
+    // storage_log("rbtree_snapshot result: ret=%d, size=%zu", LOG_DEBUG, ret, rbtree_size);
     
     
-    storage_log("Creating btree snapshot...", LOG_DEBUG);
+    // storage_log("Creating btree snapshot...", LOG_DEBUG);
     ret |= btree_snapshot(&btree_data, &btree_size);
-    storage_log("btree_snapshot result: ret=%d, size=%zu", LOG_DEBUG, ret, btree_size);
+    // storage_log("btree_snapshot result: ret=%d, size=%zu", LOG_DEBUG, ret, btree_size);
     
-    storage_log("Creating skiplist snapshot...", LOG_DEBUG);
+    // storage_log("Creating skiplist snapshot...", LOG_DEBUG);
     ret |= skiplist_snapshot(&skiplist_data, &skiplist_size);
-    storage_log("skiplist_snapshot result: ret=%d, size=%zu", LOG_DEBUG, ret, skiplist_size);
+    // storage_log("skiplist_snapshot result: ret=%d, size=%zu", LOG_DEBUG, ret, skiplist_size);
     
     if (ret != 0) {
         goto error;
@@ -217,22 +198,27 @@ int storage_restore_snapshot(const char* snapshot_data, size_t snapshot_size) {
     // 恢复数据（注意顺序）
     if (array_size > 0) {
         ret |= array_restore(ptr, array_size);
+        storage_log("array_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, array_size);
         ptr += array_size;
     }
     if (hash_size > 0) {
         ret |= hash_restore(ptr, hash_size);
+        storage_log("hash_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, hash_size);
         ptr += hash_size;
     }
     if (rbtree_size > 0) {
         ret |= rbtree_restore(ptr, rbtree_size);
+        storage_log("rbtree_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, rbtree_size);
         ptr += rbtree_size;
     }
     if (btree_size > 0) {
         ret |= btree_restore(ptr, btree_size);
+        storage_log("btree_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, btree_size);
         ptr += btree_size;
     }
     if (skiplist_size > 0) {
         ret |= skiplist_restore(ptr, skiplist_size);
+        storage_log("skiplist_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, skiplist_size);
         ptr += skiplist_size;
     }
     

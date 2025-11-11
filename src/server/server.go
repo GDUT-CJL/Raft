@@ -5,7 +5,6 @@ import (
 	"course/bridge"
 	"course/labgob"
 	"course/raft"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -163,24 +162,12 @@ func (kv *KVServer) applyTask() {
 				kv.lastApplied = message.CommandIndex
 				var opReplies []*OpReply
 				var notifyChs []chan *OpReply
-				//fmt.Printf("Type of command: %T\n", message.Command)
+				fmt.Printf("Type of command: %T\n", message.Command)
 				for _, opInterface := range message.Command {
 					var op Op
 					switch cmd := opInterface.(type) {
 					case Op:
 						op = cmd
-					case map[string]interface{}:
-						// 如果是map类型，手动映射到Op,因为在grpc中我们使用json序列化
-						// 且我们清楚的知道map中的字段对应Op的字段
-						// 因此可以用json反序列化再转成Op，避免繁琐映射
-						b, err := json.Marshal(cmd)
-						if err == nil {
-							json.Unmarshal(b, &op)
-						} else {
-							// 错误处理
-							kv.mu.Unlock()
-							continue
-						}
 					default:
 						// 其他类型不处理
 						kv.mu.Unlock()

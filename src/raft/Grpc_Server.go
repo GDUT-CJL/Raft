@@ -1,8 +1,10 @@
 package raft
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
+	"course/labgob"
+	"fmt"
 )
 
 type RaftServer struct {
@@ -37,10 +39,15 @@ func (s *RaftServer) Grpc_RequestVote(ctx context.Context, req *G_RequestVoteArg
 func convertFromGrpcLogEntries(grpcEntries []*G_LogEntry) []LogEntry {
 	entries := make([]LogEntry, len(grpcEntries))
 	for i, grpcEntry := range grpcEntries {
-		// 反序列化 Command 后序再取出这条日志的时后还要序列化回来
 		var cmd []interface{}
 		if len(grpcEntry.Command) > 0 {
-			json.Unmarshal(grpcEntry.Command, &cmd)
+			// 使用 labgob 反序列化而不是 JSON
+			r := bytes.NewReader(grpcEntry.Command)
+			d := labgob.NewDecoder(r)
+			if err := d.Decode(&cmd); err != nil {
+				fmt.Printf("Failed to decode command: %v\n", err)
+				continue
+			}
 		}
 		entries[i] = LogEntry{
 			Term:         int(grpcEntry.Term),
