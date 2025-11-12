@@ -1,15 +1,15 @@
 # 忽略构建产物
-/src/lib/
-/src/bridge/libstorage.so
-/src/client/libjlclient.so
+src/lib/
+src/bridge/libstorage.so
+src/client/libjlclient.so
 
 # 忽略测试二进制文件
-/src/client/Test
-/src/client_cpp/test
-/src/kvstore
+src/client/Test
+src/client_cpp/test
+src/kvstore
 
 # 忽略 Go 构建产物
-/main
+main
 /go.sum
 /go.mod
 
