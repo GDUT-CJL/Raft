@@ -6,6 +6,7 @@
 # 忽略测试二进制文件
 /src/client/Test
 /src/client_cpp/test
+/src/kvstore
 
 # 忽略 Go 构建产物
 /main

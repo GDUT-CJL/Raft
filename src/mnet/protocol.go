@@ -153,15 +153,8 @@ func addToBatch(op raft.Op, conn net.Conn, kv *server.KVServer, rf *raft.Raft) {
 
 // Commited 函数修改为使用批量管理器
 func Commited(optype raft.OperationType, key string, klen int, value string, vlen int, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
-	var peer int
 	if _, isLeader := rf.GetState(); !isLeader {
-		for peer = 0; peer < rf.GetPeerLen(); peer++ {
-			if peer == rf.GetLeaderId() {
-				break
-			}
-		}
-		s := strconv.Itoa(peer)
-		conn.Write([]byte("Leader is Node " + s + "\n"))
+		conn.Write([]byte("LeaderIP is  " + rf.LeaderIP + "\n"))
 		return
 	}
 

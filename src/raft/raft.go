@@ -227,11 +227,6 @@ func (rf *Raft) Start(command []Op) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	var buf bytes.Buffer
-	encoder := labgob.NewEncoder(&buf)
-	if err := encoder.Encode(command); err != nil {
-		return -1, -1, false
-	}
 	// 只有leader节点才能够操作日志，无论是set或者get等其他操作都必须是leader操作
 	if rf.role != Leader {
 		return 0, 0, false
@@ -277,11 +272,12 @@ func (rf *Raft) contextLostLocked(role Role, term int) bool {
 func MakeRaft() *Raft {
 	return &Raft{}
 }
-func (rf *Raft) GetLeaderId() int {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	return LeaderId
-}
+
+// func (rf *Raft) GetLeaderId() int {
+// 	rf.mu.Lock()
+// 	defer rf.mu.Unlock()
+// 	return LeaderId
+// }
 
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this

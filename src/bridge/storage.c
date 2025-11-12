@@ -198,27 +198,27 @@ int storage_restore_snapshot(const char* snapshot_data, size_t snapshot_size) {
     // 恢复数据（注意顺序）
     if (array_size > 0) {
         ret |= array_restore(ptr, array_size);
-        storage_log("array_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, array_size);
+        // storage_log("array_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, array_size);
         ptr += array_size;
     }
     if (hash_size > 0) {
         ret |= hash_restore(ptr, hash_size);
-        storage_log("hash_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, hash_size);
+        // storage_log("hash_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, hash_size);
         ptr += hash_size;
     }
     if (rbtree_size > 0) {
         ret |= rbtree_restore(ptr, rbtree_size);
-        storage_log("rbtree_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, rbtree_size);
+        // storage_log("rbtree_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, rbtree_size);
         ptr += rbtree_size;
     }
     if (btree_size > 0) {
         ret |= btree_restore(ptr, btree_size);
-        storage_log("btree_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, btree_size);
+        // storage_log("btree_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, btree_size);
         ptr += btree_size;
     }
     if (skiplist_size > 0) {
         ret |= skiplist_restore(ptr, skiplist_size);
-        storage_log("skiplist_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, skiplist_size);
+        // storage_log("skiplist_restore result: ret=%d, size=%zu", LOG_DEBUG, ret, skiplist_size);
         ptr += skiplist_size;
     }
     
