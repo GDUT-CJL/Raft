@@ -79,7 +79,7 @@ type ApplyMsg struct {
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex         // Lock to protect shared access to this peer's state
+	mu        sync.RWMutex       // Lock to protect shared access to this peer's state
 	peers     []RaftGrpcClient   // gRPC 客户端列表
 	conns     []*grpc.ClientConn // 保存 gRPC 连接
 	persister *Persister         // Object to hold this peer's persisted state
@@ -206,8 +206,8 @@ func (rf *Raft) GetState() (int, bool) {
 	// var term int
 	// var isleader bool
 	// Your code here (PartA).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.mu.RLock()
+	defer rf.mu.RUnlock()
 	return rf.currentTerm, rf.role == Leader
 }
 

@@ -30,10 +30,10 @@ void storage_log(const char* format, int level, ...);
 
 // ------------------------------ bstring -------------------------------- //
 typedef struct{
-    uint8_t* data;
-    size_t len;
-    size_t cap;
-    uint32_t flags;
+    uint8_t* data;// 具体的数据
+    size_t len;// 数据的长度
+    size_t cap;// 数据的容量
+    uint32_t flags;// 标志定义
 }bstring_t;
 
 // 标志定义

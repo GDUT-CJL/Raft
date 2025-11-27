@@ -86,15 +86,15 @@ func generateClientID(conn net.Conn) int64 {
 	return now ^ (int64(hash.Sum64()) & 0xFFFF) ^ (clientSeq << 32)
 }
 
-// sendBatch 修改为使用批量管理器
-func sendBatch(kv *server.KVServer, conn net.Conn, batch []raft.Op, rf *raft.Raft) {
+func sendBatch(kv *server.KVServer, conn net.Conn, batch []raft.Op, rf *raft.Raft, safeWrite func([]byte)) {
 	if len(batch) == 0 {
-		conn.Write([]byte("EMPTY_BATCH\n"))
+		safeWrite([]byte("EMPTY_BATCH\n"))
 		return
 	}
+
 	index, _, isLeader := rf.Start(batch)
 	if !isLeader {
-		conn.Write([]byte("NOT_LEADER\n"))
+		safeWrite([]byte("NOT_LEADER\n"))
 		return
 	}
 
@@ -102,22 +102,47 @@ func sendBatch(kv *server.KVServer, conn net.Conn, batch []raft.Op, rf *raft.Raf
 
 	select {
 	case <-notifyCh:
-		conn.Write([]byte("BATCH_OK\n"))
-		kv.RemoveNotifyChannel(index)
-	case <-time.After(5 * time.Second):
-		conn.Write([]byte("BATCH_TIMEOUT\n"))
-		kv.RemoveNotifyChannel(index)
+		// 提交成功后，验证数据是否真的写入
+		if verifyBatchApplied(batch) {
+			safeWrite([]byte("BATCH_OK\n"))
+			fmt.Printf("[BATCH_SUCCESS] Batch of %d operations applied successfully\n", len(batch))
+		} else {
+			safeWrite([]byte("BATCH_APPLY_FAILED\n"))
+			fmt.Printf("[BATCH_FAILED] Batch of %d operations failed to apply\n", len(batch))
+		}
+
+	case <-time.After(20 * time.Second):
+		safeWrite([]byte("BATCH_TIMEOUT\n"))
+		fmt.Printf("[BATCH_TIMEOUT] Batch of %d operations timeout\n", len(batch))
 	}
 
-	// Clean up notification channel
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		kv.RemoveNotifyChannel(index)
-	}()
+	kv.RemoveNotifyChannel(index)
+}
+
+// 验证批量操作是否真的应用了
+func verifyBatchApplied(batch []raft.Op) bool {
+	for _, op := range batch {
+		switch op.OpType {
+		case server.Set, server.RSet, server.HSet, server.BSet, server.ZSet, server.RCSet:
+			// 验证键是否存在
+			if !verifyKeyExists(op.Key) {
+				fmt.Printf("[VERIFY_FAILED] Key not found after write: %s\n", op.Key)
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func verifyKeyExists(key string) bool {
+	// 根据当前数据结构验证键是否存在
+	// 这里需要根据您的实际情况实现
+	value := bridge.RB_Get(key, len(key))
+	return len(value) != 0
 }
 
 // flushBatch 修改为使用批量管理器
-func flushBatch(kv *server.KVServer, conn net.Conn, rf *raft.Raft) {
+func flushBatch(kv *server.KVServer, conn net.Conn, rf *raft.Raft, safeWrite func([]byte)) {
 	bm := GetBatchManager()
 	bm.batchMutex.Lock()
 	defer bm.batchMutex.Unlock()
@@ -127,12 +152,12 @@ func flushBatch(kv *server.KVServer, conn net.Conn, rf *raft.Raft) {
 		batchToSend := make([]raft.Op, len(batch))
 		copy(batchToSend, batch)
 		bm.batchBufferMap[conn] = nil
-		go sendBatch(kv, conn, batchToSend, rf)
+		go sendBatch(kv, conn, batchToSend, rf, safeWrite)
 	}
 }
 
 // addToBatch 修改为使用批量管理器
-func addToBatch(op raft.Op, conn net.Conn, kv *server.KVServer, rf *raft.Raft) {
+func addToBatch(op raft.Op, conn net.Conn, kv *server.KVServer, rf *raft.Raft, safeWrite func([]byte)) {
 	bm := GetBatchManager()
 	bm.batchMutex.Lock()
 	defer bm.batchMutex.Unlock()
@@ -147,14 +172,15 @@ func addToBatch(op raft.Op, conn net.Conn, kv *server.KVServer, rf *raft.Raft) {
 		batch := make([]raft.Op, len(bm.batchBufferMap[conn]))
 		copy(batch, bm.batchBufferMap[conn])
 		bm.batchBufferMap[conn] = nil
-		go sendBatch(kv, conn, batch, rf)
+		go sendBatch(kv, conn, batch, rf, safeWrite)
 	}
 }
 
 // Commited 函数修改为使用批量管理器
-func Commited(optype raft.OperationType, key string, klen int, value string, vlen int, conn net.Conn, kv *server.KVServer, rf *raft.Raft, timer *time.Timer) {
+func Commited(optype raft.OperationType, key string, klen int, value string, vlen int, conn net.Conn, kv *server.KVServer,
+	rf *raft.Raft, timer *time.Timer, safeWrite func([]byte)) {
 	if _, isLeader := rf.GetState(); !isLeader {
-		conn.Write([]byte("LeaderIP is  " + rf.LeaderIP + "\n"))
+		safeWrite([]byte("LeaderIP is  " + rf.LeaderIP + "\n"))
 		return
 	}
 
@@ -167,8 +193,8 @@ func Commited(optype raft.OperationType, key string, klen int, value string, vle
 		ClientId: generateClientID(conn),
 		SeqId:    generateSeqID(),
 	}
-	addToBatch(op, conn, kv, rf)
-	conn.Write([]byte("ACK\n"))
+	addToBatch(op, conn, kv, rf, safeWrite)
+	safeWrite([]byte("ACK\n"))
 
 	// Reset timer using configured timeout
 	bm := GetBatchManager()
@@ -256,14 +282,24 @@ func parseRESP(reader *bufio.Reader) ([]string, error) {
 	return parts, nil
 }
 
-// handleConnection 修改为使用批量管理器
+// handleConnection 使用批量管理器
 func handleConnection(kv *server.KVServer, conn net.Conn) {
+	// 为每个连接创建专用的写入锁
+	var writeMutex sync.Mutex
+	writer := bufio.NewWriterSize(conn, 64*1024) // 使用带缓冲的writer
+	// 包装写入函数，确保线程安全
+	safeWrite := func(data []byte) {
+		writeMutex.Lock()
+		defer writeMutex.Unlock()
+		writer.Write(data)
+		writer.Flush() // 立即刷新缓冲区
+	}
 	rf := kv.GetRaft()
 	quitCh := make(chan struct{})
 	defer func() {
 		for i := 0; i < 3; i++ {
-			flushBatch(kv, conn, rf)
-			time.Sleep(10 * time.Millisecond)
+			flushBatch(kv, conn, rf, safeWrite)
+			time.Sleep(50 * time.Millisecond)
 		}
 		close(quitCh)
 
@@ -273,7 +309,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 		bm.batchMutex.Unlock()
 		conn.Close()
 	}()
-	reader := bufio.NewReader(conn)
+	reader := bufio.NewReaderSize(conn, 128*1024)
 
 	// Start a timer with configured timeout
 	bm := GetBatchManager()
@@ -285,7 +321,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 		for {
 			select {
 			case <-timer.C:
-				flushBatch(kv, conn, rf)
+				flushBatch(kv, conn, rf, safeWrite)
 				timer.Reset(bm.GetBatchTimeout())
 			case <-quitCh:
 				return
@@ -298,28 +334,13 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 		var action string
 
 		if err != nil {
-			// 如果不是RESP格式，回退到原有文本协议处理
-			conn.Write([]byte("ERR invalid RESP format, falling back to text protocol\n"))
-
-			// 原有的文本协议处理逻辑（作为后备）
-			buffer := make([]byte, 1024)
-			n, err := conn.Read(buffer)
-			if err != nil {
-				//fmt.Fprintf(os.Stderr, "Error reading from connection: %s\n", err)
-				return
-			}
-			command := string(buffer[:n])
-			command = strings.TrimSpace(command)
-			parts = strings.Split(command, " ")
-			if len(parts) < 1 {
-				conn.Write([]byte("Invalid command\n"))
-				continue
-			}
-			action = strings.ToUpper(parts[0])
+			// 直接关闭连接或返回错误，不要回退到文本协议
+			safeWrite([]byte("ERR invalid RESP format\n"))
+			continue
 		} else {
 			// RESP解析成功
 			if len(parts) < 1 {
-				conn.Write([]byte("Invalid command\n"))
+				safeWrite([]byte("Invalid command\n"))
 				continue
 			}
 			action = strings.ToUpper(parts[0])
@@ -330,316 +351,305 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 		// Array
 		case "SET":
 			if len(parts) != 3 {
-				conn.Write([]byte("Invalid SET command\n"))
+				safeWrite([]byte("Invalid SET command\n"))
 				continue
 			}
-			Commited(server.Set, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer)
+			Commited(server.Set, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer, safeWrite)
 
 		case "GET":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR invalid GET command\n"))
+				safeWrite([]byte("ERR invalid GET command\n"))
 				continue
 			}
 			value := bridge.Array_Get(parts[1], len(parts[1]))
 			if len(value) != 0 {
-				conn.Write([]byte(value + "\n"))
+				safeWrite([]byte(value + "\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		case "COUNT":
 			if len(parts) != 1 {
-				conn.Write([]byte("ERR invalid COUNT command\n"))
+				safeWrite([]byte("ERR invalid COUNT command\n"))
 				continue
 			}
 			value := bridge.Array_Count()
 
 			str := strconv.Itoa(value)
 			if len(str) != 0 {
-				conn.Write([]byte(str + "\n"))
+				safeWrite([]byte(str + "\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		case "DELETE":
 			if len(parts) != 2 {
-				conn.Write([]byte("Invalid DELETE command\n"))
+				safeWrite([]byte("Invalid DELETE command\n"))
 				continue
 			}
-			Commited(server.Delete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer)
+			Commited(server.Delete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer, safeWrite)
 
 		case "EXIST":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR invalid EXIST command\n"))
+				safeWrite([]byte("ERR invalid EXIST command\n"))
 				continue
 			}
 			ret := bridge.Array_Exist(parts[1], len(parts[1]))
 			if ret == 0 {
-				conn.Write([]byte("Exist\n"))
+				safeWrite([]byte("Exist\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 
 		// Hash
 		case "HSET":
 			if len(parts) != 3 {
-				conn.Write([]byte("Invalid HSET command\n"))
+				safeWrite([]byte("Invalid HSET command\n"))
 				continue
 			}
-			Commited(server.HSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer)
+			Commited(server.HSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer, safeWrite)
 
 		case "HGET":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR invalid HGET command\n"))
+				safeWrite([]byte("ERR invalid HGET command\n"))
 				continue
 			}
 			value := bridge.Hash_Get(parts[1], len(parts[1]))
 			if len(value) != 0 {
-				conn.Write([]byte(value + "\n"))
+				safeWrite([]byte(value + "\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		case "HCOUNT":
 			if len(parts) != 1 {
-				conn.Write([]byte("ERR invalid HCOUNT command\n"))
+				safeWrite([]byte("ERR invalid HCOUNT command\n"))
 				continue
 			}
 			value := bridge.Hash_Count()
 			str := strconv.Itoa(value)
 			if len(str) != 0 {
-				conn.Write([]byte(str + "\n"))
+				safeWrite([]byte(str + "\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		case "HDELETE":
 			if len(parts) != 2 {
-				conn.Write([]byte("Invalid HDELETE command\n"))
+				safeWrite([]byte("Invalid HDELETE command\n"))
 				continue
 			}
-			Commited(server.HDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer)
+			Commited(server.HDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer, safeWrite)
 
 		case "HEXIST":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR invalid HEXIST command\n"))
+				safeWrite([]byte("ERR invalid HEXIST command\n"))
 				continue
 			}
 			ret := bridge.Hash_Exist(parts[1], len(parts[1]))
 			if ret == 0 {
-				conn.Write([]byte("Exist\n"))
+				safeWrite([]byte("Exist\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		// RBTree
 		case "RSET":
 			if len(parts) != 3 {
-				conn.Write([]byte("Invalid RSET command\n"))
+				safeWrite([]byte("Invalid RSET command\n"))
 				continue
 			}
-			Commited(server.RSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer)
+			Commited(server.RSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer, safeWrite)
 
 		case "RGET":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR invalid RGET command\n"))
+				safeWrite([]byte("ERR invalid RGET command\n"))
 				continue
 			}
 			value := bridge.RB_Get(parts[1], len(parts[1]))
 			if len(value) != 0 {
-				conn.Write([]byte(value + "\n"))
+				safeWrite([]byte(value + "\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		case "RCOUNT":
 			if len(parts) != 1 {
-				conn.Write([]byte("ERR invalid RCOUNT command\n"))
+				safeWrite([]byte("ERR invalid RCOUNT command\n"))
 				continue
 			}
 			value := bridge.RB_Count()
 			str := strconv.Itoa(value)
 			if len(str) != 0 {
-				conn.Write([]byte(str + "\n"))
+				safeWrite([]byte(str + "\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		case "RDELETE":
 			if len(parts) != 2 {
-				conn.Write([]byte("Invalid RDELETE command\n"))
+				safeWrite([]byte("Invalid RDELETE command\n"))
 				continue
 			}
-			Commited(server.Delete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer)
+			Commited(server.RDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer, safeWrite)
 
 		case "REXIST":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR invalid REXIST command\n"))
+				safeWrite([]byte("ERR invalid REXIST command\n"))
 				continue
 			}
 			ret := bridge.RB_Exist(parts[1], len(parts[1]))
 			if ret == 0 {
-				conn.Write([]byte("Exist\n"))
+				safeWrite([]byte("Exist\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 
 		// BTree
 		case "BSET":
 			if len(parts) != 3 {
-				conn.Write([]byte("Invalid BSET command\n"))
+				safeWrite([]byte("Invalid BSET command\n"))
 				continue
 			}
-			Commited(server.BSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer)
+			Commited(server.BSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer, safeWrite)
 
 		case "BGET":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR invalid BGET command\n"))
+				safeWrite([]byte("ERR invalid BGET command\n"))
 				continue
 			}
 			value := bridge.BTree_Get(parts[1], len(parts[1]))
 			if len(value) != 0 {
-				conn.Write([]byte(value + "\n"))
+				safeWrite([]byte(value + "\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		case "BCOUNT":
 			if len(parts) != 1 {
-				conn.Write([]byte("ERR invalid BCOUNT command\n"))
+				safeWrite([]byte("ERR invalid BCOUNT command\n"))
 				continue
 			}
 			value := bridge.BTree_Count()
 			str := strconv.Itoa(value)
 			if len(str) != 0 {
-				conn.Write([]byte(str + "\n"))
+				safeWrite([]byte(str + "\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		case "BDELETE":
 			if len(parts) != 2 {
-				conn.Write([]byte("Invalid BDELETE command\n"))
+				safeWrite([]byte("Invalid BDELETE command\n"))
 				continue
 			}
-			Commited(server.BDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer)
+			Commited(server.BDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer, safeWrite)
 
 		case "BEXIST":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR invalid BEXIST command\n"))
+				safeWrite([]byte("ERR invalid BEXIST command\n"))
 				continue
 			}
 			ret := bridge.BTree_Exist(parts[1], len(parts[1]))
 			if ret == 0 {
-				conn.Write([]byte("Exist\n"))
+				safeWrite([]byte("Exist\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		//Skiplist
 		case "ZSET":
 			if len(parts) != 3 {
-				conn.Write([]byte("Invalid ZSET command\n"))
+				safeWrite([]byte("Invalid ZSET command\n"))
 				continue
 			}
-			Commited(server.ZSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer)
+			Commited(server.ZSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer, safeWrite)
 
 		case "ZGET":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR invalid ZGET command\n"))
+				safeWrite([]byte("ERR invalid ZGET command\n"))
 				continue
 			}
 			value := bridge.Skiplist_Get(parts[1], len(parts[1]))
 			if len(value) != 0 {
-				conn.Write([]byte(value + "\n"))
+				safeWrite([]byte(value + "\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		case "ZCOUNT":
 			if len(parts) != 1 {
-				conn.Write([]byte("ERR invalid ZCOUNT command\n"))
+				safeWrite([]byte("ERR invalid ZCOUNT command\n"))
 				continue
 			}
 			value := bridge.Skiplist_Count()
 
 			str := strconv.Itoa(value)
 			if len(str) != 0 {
-				conn.Write([]byte(str + "\n"))
+				safeWrite([]byte(str + "\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		case "ZDELETE":
 			if len(parts) != 2 {
-				conn.Write([]byte("Invalid ZDELETE command\n"))
+				safeWrite([]byte("Invalid ZDELETE command\n"))
 				continue
 			}
-			Commited(server.ZDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer)
+			Commited(server.ZDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer, safeWrite)
 
 		case "ZEXIST":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR invalid ZEXIST command\n"))
+				safeWrite([]byte("ERR invalid ZEXIST command\n"))
 				continue
 			}
 			ret := bridge.Skiplist_Exist(parts[1], len(parts[1]))
 			if ret == 0 {
-				conn.Write([]byte("Exist\n"))
+				safeWrite([]byte("Exist\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		//Rocksdb
 		case "RCSET":
 			if len(parts) != 3 {
-				conn.Write([]byte("Invalid RCSET command\n"))
+				safeWrite([]byte("Invalid RCSET command\n"))
 				continue
 			}
-			Commited(server.RCSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer)
+			Commited(server.RCSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer, safeWrite)
 
 		case "RCGET":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR invalid RCGET command\n"))
+				safeWrite([]byte("ERR invalid RCGET command\n"))
 				continue
 			}
 			value := bridge.RC_Get(parts[1])
 			if len(value) != 0 {
-				conn.Write([]byte(value + "\n"))
+				safeWrite([]byte(value + "\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		case "RCCOUNT":
 			if len(parts) != 1 {
-				conn.Write([]byte("ERR invalid RCCOUNT command\n"))
+				safeWrite([]byte("ERR invalid RCCOUNT command\n"))
 				continue
 			}
 			value := bridge.RC_Count()
 
 			str := strconv.Itoa(value)
 			if len(str) != 0 {
-				conn.Write([]byte(str + "\n"))
+				safeWrite([]byte(str + "\n"))
 			} else {
-				conn.Write([]byte("nil\n"))
+				safeWrite([]byte("nil\n"))
 			}
 		case "RCDELETE":
 			if len(parts) != 2 {
-				conn.Write([]byte("Invalid ZDELETE command\n"))
+				safeWrite([]byte("Invalid ZDELETE command\n"))
 				continue
 			}
-			Commited(server.RCDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer)
+			Commited(server.RCDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer, safeWrite)
 
-		case "RCEXIST":
-			if len(parts) != 2 {
-				conn.Write([]byte("ERR invalid ZEXIST command\n"))
-				continue
-			}
-			ret := bridge.Skiplist_Exist(parts[1], len(parts[1]))
-			if ret == 0 {
-				conn.Write([]byte("Exist\n"))
-			} else {
-				conn.Write([]byte("nil\n"))
-			}
 		case "LEADER":
 			currentTerm, isLeader := kv.GetRaft().GetState()
 			fmt.Printf("当前状态: %v, 当前任期: %d\n", isLeader, currentTerm)
 			if isLeader {
-				conn.Write([]byte("isLeader\n"))
+				safeWrite([]byte("isLeader\n"))
 			} else {
-				conn.Write([]byte("isCluster\n"))
+				safeWrite([]byte("isCluster\n"))
 			}
 		case "NUM":
 			num := kv.GetSetCounter()
 			str := strconv.FormatInt(num, 10)
-			conn.Write([]byte(str + "\n"))
+			safeWrite([]byte(str + "\n"))
 		default:
-			conn.Write([]byte("Unknown command\n"))
+			safeWrite([]byte("Unknown command\n"))
 		}
 	}
 }
