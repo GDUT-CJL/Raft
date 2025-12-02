@@ -3,8 +3,9 @@ package raft
 import (
 	"context"
 	//"encoding/json"
-
 	"sort"
+	"sync/atomic"
+
 	"time"
 )
 
@@ -147,6 +148,25 @@ func convertToGrpcLogEntries(entries []LogEntry) []*G_LogEntry {
 	return grpcEntries
 }
 
+// 包装sendAppendEntries以进行性能监控
+func (rf *Raft) sendAppendEntriesWithMetrics(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	start := time.Now()
+	defer func() {
+		duration := time.Since(start).Nanoseconds() / int64(time.Millisecond)
+
+		if len(args.Entries) > 0 {
+			// 真正的日志复制
+			atomic.AddInt64(&rf.perfStats.appendRpcCount, 1)
+			atomic.AddInt64(&rf.perfStats.appendRpcTime, duration)
+		} else {
+			// 心跳
+			atomic.AddInt64(&rf.perfStats.heartbeatCount, 1)
+			atomic.AddInt64(&rf.perfStats.heartbeatTime, duration)
+		}
+	}()
+
+	return rf.sendAppendEntries(server, args, reply)
+}
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	if rf.me == server {
 		return false
@@ -192,7 +212,7 @@ func (rf *Raft) getMajorityIndexLocked() int {
 func (rf *Raft) startReplication(term int) bool {
 	replicateToPeer := func(peer int, args *AppendEntriesArgs) {
 		reply := &AppendEntriesReply{}
-		ok := rf.sendAppendEntries(peer, args, reply)
+		ok := rf.sendAppendEntriesWithMetrics(peer, args, reply)
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 		if !ok {

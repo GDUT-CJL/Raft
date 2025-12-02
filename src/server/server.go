@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 func (kv *KVServer) Kill() {
@@ -36,11 +37,13 @@ type KVServer struct {
 	// key为clientID，value是LastOperationInfo（SeqId + Reply）
 	// 客户端每次发送一个请求在server中都会给随机一个ClentId和SeqId
 	clientSeqTable map[int64]LastOperationInfo // 客户端最后处理的序列号,处理重复请求
-	notifyChans    map[int]chan *OpReply
+	notifyChans    map[int]chan []*OpReply
 	notifyMu       sync.RWMutex
 	Counter        int64 // 原子计数器,用于测试
 	// 添加快照相关的字段
 	persister *raft.Persister
+
+	stateMachineMu sync.RWMutex
 }
 
 func (kv *KVServer) GetSetCounter() int64 {
@@ -81,7 +84,7 @@ func StartKVServer(servers []string, me int, maxraftstate int) *KVServer {
 	kv.lastApplied = 0
 
 	kv.clientSeqTable = make(map[int64]LastOperationInfo)
-	kv.notifyChans = make(map[int]chan *OpReply)
+	kv.notifyChans = make(map[int]chan []*OpReply)
 
 	go kv.applyTask()
 	return kv
@@ -146,76 +149,107 @@ func (kv *KVServer) restoreFromSnapshot(snapshot []byte) {
 	fmt.Printf("KVServer[%d] restored from snapshot\n", kv.me)
 }
 
-var mechineLock sync.RWMutex
-
 func (kv *KVServer) applyTask() {
 	for !kv.killed() {
 		select {
 		case message := <-kv.applyCh:
 			if message.CommandValid {
+				// 只在需要访问共享数据时加锁
 				kv.mu.Lock()
-				// 如果是已经处理过的消息则直接忽略
 				if message.CommandIndex <= kv.lastApplied {
 					kv.mu.Unlock()
 					continue
 				}
 				kv.lastApplied = message.CommandIndex
-				var opReplies []*OpReply
-				var notifyChs []chan *OpReply
-				// fmt.Printf("Type of command: %T\n", message.Command)
-				for _, opInterface := range message.Command {
-					var opReply *OpReply
-					if kv.requestDuplicated(opInterface.ClientId, opInterface.SeqId) {
-						opReply = kv.clientSeqTable[opInterface.ClientId].Reply
-						fmt.Println("重复请求")
+
+				// 批量收集需要处理的操作
+				var operations []raft.Op
+				var duplicateFlags []bool
+				var cachedReplies []*OpReply
+
+				for _, op := range message.Command {
+					if kv.requestDuplicated(op.ClientId, op.SeqId) {
+						duplicateFlags = append(duplicateFlags, true)
+						cachedReplies = append(cachedReplies, kv.clientSeqTable[op.ClientId].Reply)
 					} else {
-						// 应用到状态机中
-						mechineLock.Lock()
-						opReply = kv.applyToStateMachine(opInterface)
-						mechineLock.Unlock()
-						// 更新clientSeqTable数据
-						kv.clientSeqTable[opInterface.ClientId] = LastOperationInfo{
-							SeqId: opInterface.SeqId,
-							Reply: opReply,
-						}
+						duplicateFlags = append(duplicateFlags, false)
+						operations = append(operations, op)
 					}
-					// 为了防止死锁更改，先把每个回复的结果存储起来
-					opReplies = append(opReplies, opReply)
-					notifyCh := kv.GetNotifyChannel(message.CommandIndex)
-					//fmt.Printf("commit index = %d\n", message.CommandIndex)
-					// 并且把每个通道也存储起来，最后一一的对应返回
-					notifyChs = append(notifyChs, notifyCh)
 				}
-				// 判断是否需要制作快照
+
+				// 只在必要时检查快照
+				snapshotNeeded := false
 				if kv.maxraftstate != -1 && kv.rf.GetRaftStateSize() >= kv.maxraftstate {
+					snapshotNeeded = true
+				}
+
+				kv.mu.Unlock() // 提前释放锁！
+
+				// 应用状态机操作（使用状态机锁）
+				var opReplies []*OpReply
+				kv.stateMachineMu.Lock()
+				for _, op := range operations {
+					reply := kv.applyToStateMachine(op)
+					opReplies = append(opReplies, reply)
+				}
+				kv.stateMachineMu.Unlock()
+
+				// 合并结果
+				var finalReplies []*OpReply
+				duplicateIndex := 0
+				operationIndex := 0
+
+				for i := 0; i < len(duplicateFlags); i++ {
+					if duplicateFlags[i] {
+						finalReplies = append(finalReplies, cachedReplies[duplicateIndex])
+						duplicateIndex++
+					} else {
+						finalReplies = append(finalReplies, opReplies[operationIndex])
+						operationIndex++
+					}
+				}
+
+				// 更新clientSeqTable（需要再次加锁，但时间很短）
+				kv.mu.Lock()
+				for i, op := range operations {
+					kv.clientSeqTable[op.ClientId] = LastOperationInfo{
+						SeqId: op.SeqId,
+						Reply: opReplies[i],
+					}
+				}
+
+				// 制作快照（如果必要）
+				if snapshotNeeded {
 					kv.makeSnapshot(message.CommandIndex)
 				}
-				kv.mu.Unlock() // [注意] 提前释放锁，防止在net层的死锁！！！
-				// // 在锁外检查是否是 Leader 并发送结果
+
+				kv.mu.Unlock()
+
+				// 通知网络层 - 关键优化：先检查是否是Leader，再获取通道
 				_, isLeader := kv.rf.GetState()
 				if isLeader {
-					for i, notifyCh := range notifyChs {
-						select {
-						// 一一对应的返回
-						case notifyCh <- opReplies[i]:
-						default:
-							// 防止阻塞，可选日志记录
-						}
+					//startTime := time.Now()
+					notifyCh := kv.GetNotifyChannel(message.CommandIndex)
+					select {
+					case notifyCh <- finalReplies:
+					default:
+						// 通道满时，异步重试一次
+						go func(ch chan []*OpReply, replies []*OpReply, idx int) {
+							time.Sleep(time.Microsecond * 10)
+							select {
+							case ch <- replies:
+							default:
+								kv.RemoveNotifyChannel(idx)
+							}
+						}(notifyCh, finalReplies, message.CommandIndex)
 					}
+					//duration := time.Since(startTime)
+					//fmt.Printf("Leader通知耗时: %v\n", duration)
 				}
-			} else if message.SnapshotValid {
-				// 处理快照应用
-				kv.mu.Lock()
-				if message.SnapshotIndex > kv.lastApplied {
-					kv.restoreFromSnapshot(message.Snapshot)
-					kv.lastApplied = message.SnapshotIndex
-				}
-				kv.mu.Unlock()
 			}
 		}
 	}
 }
-
 func (kv *KVServer) applyToStateMachine(op raft.Op) *OpReply {
 	var value int
 	var err string
@@ -268,13 +302,28 @@ func (kv *KVServer) applyToStateMachine(op raft.Op) *OpReply {
 }
 
 // 同时写入读取map即并发的读写map的时候会出现错误
-func (kv *KVServer) GetNotifyChannel(index int) chan *OpReply {
+func (kv *KVServer) GetNotifyChannel(index int) chan []*OpReply {
+	// 使用读锁快速检查
+	kv.notifyMu.RLock()
+	ch, exists := kv.notifyChans[index]
+	kv.notifyMu.RUnlock()
+
+	if exists {
+		return ch
+	}
+
+	// 不存在时使用写锁创建
 	kv.notifyMu.Lock()
 	defer kv.notifyMu.Unlock()
-	if _, ok := kv.notifyChans[index]; !ok {
-		kv.notifyChans[index] = make(chan *OpReply, 1)
+
+	// 双重检查
+	if ch, exists = kv.notifyChans[index]; exists {
+		return ch
 	}
-	return kv.notifyChans[index]
+
+	ch = make(chan []*OpReply, 1)
+	kv.notifyChans[index] = ch
+	return ch
 }
 
 func (kv *KVServer) RemoveNotifyChannel(index int) {

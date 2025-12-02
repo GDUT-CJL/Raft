@@ -6,6 +6,7 @@ import (
 	"course/bridge"
 	"course/raft"
 	"course/server"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"net"
@@ -105,15 +106,15 @@ func sendBatch(kv *server.KVServer, conn net.Conn, batch []raft.Op, rf *raft.Raf
 		// 提交成功后，验证数据是否真的写入
 		if verifyBatchApplied(batch) {
 			safeWrite([]byte("BATCH_OK\n"))
-			fmt.Printf("[BATCH_SUCCESS] Batch of %d operations applied successfully\n", len(batch))
+			//fmt.Printf("[BATCH_SUCCESS] Batch of %d operations applied successfully\n", len(batch))
 		} else {
 			safeWrite([]byte("BATCH_APPLY_FAILED\n"))
-			fmt.Printf("[BATCH_FAILED] Batch of %d operations failed to apply\n", len(batch))
+			//fmt.Printf("[BATCH_FAILED] Batch of %d operations failed to apply\n", len(batch))
 		}
 
-	case <-time.After(20 * time.Second):
+	case <-time.After(30 * time.Second):
 		safeWrite([]byte("BATCH_TIMEOUT\n"))
-		fmt.Printf("[BATCH_TIMEOUT] Batch of %d operations timeout\n", len(batch))
+		//fmt.Printf("[BATCH_TIMEOUT] Batch of %d operations timeout\n", len(batch))
 	}
 
 	kv.RemoveNotifyChannel(index)
@@ -644,6 +645,41 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 			} else {
 				safeWrite([]byte("isCluster\n"))
 			}
+		// case "STATS":
+		// 	stats := rf.GetPerformanceStats()
+		// 	statsJSON, _ := json.Marshal(stats)
+		// 	safeWrite([]byte(string(statsJSON) + "\n"))
+		case "DET":
+			rf := kv.GetRaft()
+			state := rf.GetDetailedState()
+			// 将map转换为JSON格式返回
+			jsonData, err := json.MarshalIndent(state, "", "  ")
+			if err != nil {
+				safeWrite([]byte("Error marshaling state to JSON\n"))
+			} else {
+				safeWrite([]byte(string(jsonData) + "\n"))
+			}
+
+		case "LOG":
+			rf := kv.GetRaft()
+			state := rf.GetLogConsistencyState()
+			jsonData, err := json.MarshalIndent(state, "", "  ")
+			if err != nil {
+				safeWrite([]byte("Error marshaling log state to JSON\n"))
+			} else {
+				safeWrite([]byte(string(jsonData) + "\n"))
+			}
+
+		case "STATS":
+			rf := kv.GetRaft()
+			performanceStats := rf.GetPerformanceStats()
+			jsonData, err := json.MarshalIndent(performanceStats, "", "  ")
+			if err != nil {
+				safeWrite([]byte("Error marshaling stats to JSON\n"))
+			} else {
+				safeWrite([]byte(string(jsonData) + "\n"))
+			}
+
 		case "NUM":
 			num := kv.GetSetCounter()
 			str := strconv.FormatInt(num, 10)

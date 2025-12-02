@@ -17,7 +17,7 @@
     }
   ],
   "batch": {
-    "batch_size": 500,
+    "batch_size": 50,
     "batch_timeout": 500000000
   }
 }
