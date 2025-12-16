@@ -27,7 +27,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
 	// 替换为实际的 proto 包路径
 
 	"google.golang.org/grpc"
@@ -432,7 +431,13 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 		}
 
 		// 注册到rpc网络中，成为rpc网络中的一个节点
-		grpcServer := grpc.NewServer()
+		grpcServer := grpc.NewServer(
+			grpc.MaxRecvMsgSize(10*1024*1024),
+			grpc.MaxSendMsgSize(10*1024*1024),
+			grpc.InitialWindowSize(2*1024*1024),
+			grpc.InitialConnWindowSize(4*1024*1024),
+			grpc.NumStreamWorkers(4),
+		)
 		RegisterRaftGrpcServer(
 			grpcServer,
 			NewServer(rf), // 传入当前 Raft 实例
@@ -458,6 +463,13 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 		conn, err := grpc.Dial(
 			addr,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithDefaultCallOptions(
+				grpc.MaxCallRecvMsgSize(10*1024*1024), // 10MB
+			//grpc.MaxCallSendMsgSize(10*1024*1024),
+			//grpc.UseCompressor("gzip"), // 启用压缩
+			),
+			grpc.WithInitialWindowSize(2*1024*1024),     // 2MB
+			grpc.WithInitialConnWindowSize(4*1024*1024), // 4MB
 		)
 		if err != nil {
 			log.Fatalf("did not connect: %v", err)

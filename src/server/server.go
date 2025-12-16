@@ -6,6 +6,7 @@ import (
 	"course/labgob"
 	"course/raft"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,6 +45,13 @@ type KVServer struct {
 	persister *raft.Persister
 
 	stateMachineMu sync.RWMutex
+	snapshotCond   *sync.Cond     // 用于快照制作的同步
+	snapshotQueue  []snapshotTask // 快照任务队列
+}
+
+type snapshotTask struct {
+	index          int
+	clientSeqTable map[int64]LastOperationInfo
 }
 
 func (kv *KVServer) GetSetCounter() int64 {
@@ -76,7 +84,7 @@ func StartKVServer(servers []string, me int, maxraftstate int) *KVServer {
 	kv.persister = raft.MakePersister(me)
 	// You may need initialization code here.
 
-	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.applyCh = make(chan raft.ApplyMsg, 1000)
 	kv.rf = raft.Make(servers, me, kv.applyCh)
 
 	// You may need initialization code here.
@@ -85,13 +93,46 @@ func StartKVServer(servers []string, me int, maxraftstate int) *KVServer {
 
 	kv.clientSeqTable = make(map[int64]LastOperationInfo)
 	kv.notifyChans = make(map[int]chan []*OpReply)
+	kv.snapshotCond = sync.NewCond(&kv.mu)
+	kv.snapshotQueue = make([]snapshotTask, 0)
+
+	// 启动快照制作协程
+	go kv.snapshotWorker()
 
 	go kv.applyTask()
 	return kv
 }
 
-// 制作快照
-func (kv *KVServer) makeSnapshot(index int) {
+// 快照制作工作协程
+func (kv *KVServer) snapshotWorker() {
+	for !kv.killed() {
+		var task snapshotTask
+
+		kv.mu.Lock()
+		// 等待快照任务
+		for len(kv.snapshotQueue) == 0 && !kv.killed() {
+			kv.snapshotCond.Wait()
+		}
+		if kv.killed() {
+			kv.mu.Unlock()
+			return
+		}
+		// 取出任务
+		task = kv.snapshotQueue[0]
+		kv.snapshotQueue = kv.snapshotQueue[1:]
+		clientSeqTableCopy := make(map[int64]LastOperationInfo)
+		for k, v := range task.clientSeqTable {
+			clientSeqTableCopy[k] = v
+		}
+		kv.mu.Unlock()
+
+		// 制作快照（不持有主锁）
+		kv.makeSnapshotAsync(task.index, clientSeqTableCopy)
+	}
+}
+
+// 异步制作快照
+func (kv *KVServer) makeSnapshotAsync(index int, clientSeqTable map[int64]LastOperationInfo) {
 	// 获取C层状态机的快照
 	stateMachineSnapshot := bridge.Storage_Snapshot()
 	if stateMachineSnapshot == nil {
@@ -103,7 +144,7 @@ func (kv *KVServer) makeSnapshot(index int) {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 
-	if e.Encode(kv.clientSeqTable) != nil {
+	if e.Encode(clientSeqTable) != nil {
 		fmt.Printf("KVServer[%d] encode clientSeqTable failed\n", kv.me)
 		return
 	}
@@ -115,7 +156,6 @@ func (kv *KVServer) makeSnapshot(index int) {
 	// 调用Raft层快照
 	snapshot := w.Bytes()
 	kv.rf.Snapshot(index, snapshot)
-	//fmt.Printf("KVServer[%d] made snapshot at index %d, size: %d\n", kv.me, index, len(snapshot))
 }
 
 // 从快照恢复
@@ -149,12 +189,29 @@ func (kv *KVServer) restoreFromSnapshot(snapshot []byte) {
 	fmt.Printf("KVServer[%d] restored from snapshot\n", kv.me)
 }
 
+func (kv *KVServer) printResourceUsage() {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	fmt.Printf("KVServer[%d] Resource: Heap=%vMB, Goroutines=%d, GC=%v\n",
+		kv.me,
+		m.Alloc/1024/1024,
+		runtime.NumGoroutine(),
+		time.Duration(m.PauseTotalNs).String())
+}
+
 func (kv *KVServer) applyTask() {
+	var lastPrintTime time.Time
 	for !kv.killed() {
 		select {
 		case message := <-kv.applyCh:
 			if message.CommandValid {
 				// 只在需要访问共享数据时加锁
+				if time.Since(lastPrintTime) > 5*time.Second {
+					kv.printResourceUsage()
+					lastPrintTime = time.Now()
+				}
+
 				kv.mu.Lock()
 				if message.CommandIndex <= kv.lastApplied {
 					kv.mu.Unlock()
@@ -177,7 +234,7 @@ func (kv *KVServer) applyTask() {
 					}
 				}
 
-				// 只在必要时检查快照
+				// 检查是否需要快照
 				snapshotNeeded := false
 				if kv.maxraftstate != -1 && kv.rf.GetRaftStateSize() >= kv.maxraftstate {
 					snapshotNeeded = true
@@ -211,45 +268,58 @@ func (kv *KVServer) applyTask() {
 
 				// 更新clientSeqTable（需要再次加锁，但时间很短）
 				kv.mu.Lock()
+				// 先复制一份用于快照
+				var clientSeqTableCopy map[int64]LastOperationInfo
+				if snapshotNeeded {
+					clientSeqTableCopy = make(map[int64]LastOperationInfo)
+				}
+
 				for i, op := range operations {
-					kv.clientSeqTable[op.ClientId] = LastOperationInfo{
+					info := LastOperationInfo{
 						SeqId: op.SeqId,
 						Reply: opReplies[i],
 					}
+					kv.clientSeqTable[op.ClientId] = info
+					if snapshotNeeded {
+						clientSeqTableCopy[op.ClientId] = info
+					}
 				}
 
-				// 制作快照（如果必要）
+				// 如果有快照需求，放入队列异步处理
 				if snapshotNeeded {
-					kv.makeSnapshot(message.CommandIndex)
+					task := snapshotTask{
+						index:          message.CommandIndex,
+						clientSeqTable: clientSeqTableCopy,
+					}
+					kv.snapshotQueue = append(kv.snapshotQueue, task)
+					kv.snapshotCond.Signal()
 				}
-
 				kv.mu.Unlock()
 
 				// 通知网络层 - 关键优化：先检查是否是Leader，再获取通道
 				_, isLeader := kv.rf.GetState()
 				if isLeader {
-					//startTime := time.Now()
+					// 获取通知通道（不持有主锁）
 					notifyCh := kv.GetNotifyChannel(message.CommandIndex)
-					select {
-					case notifyCh <- finalReplies:
-					default:
-						// 通道满时，异步重试一次
-						go func(ch chan []*OpReply, replies []*OpReply, idx int) {
-							time.Sleep(time.Microsecond * 10)
-							select {
-							case ch <- replies:
-							default:
-								kv.RemoveNotifyChannel(idx)
-							}
-						}(notifyCh, finalReplies, message.CommandIndex)
-					}
-					//duration := time.Since(startTime)
-					//fmt.Printf("Leader通知耗时: %v\n", duration)
+
+					// 异步发送通知，避免阻塞
+					go func(ch chan []*OpReply, replies []*OpReply, idx int) {
+						select {
+						case ch <- replies:
+							// 发送成功，延迟清理
+							time.Sleep(100 * time.Millisecond)
+							kv.RemoveNotifyChannel(idx)
+						case <-time.After(50 * time.Millisecond):
+							// 超时，直接清理
+							kv.RemoveNotifyChannel(idx)
+						}
+					}(notifyCh, finalReplies, message.CommandIndex)
 				}
 			}
 		}
 	}
 }
+
 func (kv *KVServer) applyToStateMachine(op raft.Op) *OpReply {
 	var value int
 	var err string

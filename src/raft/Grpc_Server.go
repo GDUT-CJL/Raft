@@ -32,21 +32,40 @@ func (s *RaftServer) Grpc_RequestVote(ctx context.Context, req *G_RequestVoteArg
 	}, nil
 }
 
-// 转换函数：gRPC LogEntry → 内部 LogEntry
+// 转换函数：gRPC LogEntry → 内部 LogEntry（bytes版本）
 func convertFromGrpcLogEntries(grpcEntries []*G_LogEntry) []LogEntry {
+	if grpcEntries == nil {
+		return nil
+	}
+
 	entries := make([]LogEntry, len(grpcEntries))
 	for i, grpcEntry := range grpcEntries {
 		var ops []Op
-		for _, grpcOp := range grpcEntry.Command {
-			ops = append(ops, Op{
-				ClientId: grpcOp.ClientId,
-				SeqId:    grpcOp.SeqId,
-				OpType:   OperationType(grpcOp.OpType),
-				Key:      grpcOp.Key,
-				Value:    grpcOp.Value,
-				Klen:     int(grpcOp.Klen),
-				Vlen:     int(grpcOp.Vlen),
-			})
+
+		// 检查 Command 是否为 nil
+		if grpcEntry.Command != nil {
+			for _, grpcOp := range grpcEntry.Command {
+				// 将 []byte 转换为 string
+				keyStr := ""
+				if grpcOp.Key != nil {
+					keyStr = string(grpcOp.Key)
+				}
+
+				valueStr := ""
+				if grpcOp.Value != nil {
+					valueStr = string(grpcOp.Value)
+				}
+
+				ops = append(ops, Op{
+					ClientId: grpcOp.ClientId,
+					SeqId:    grpcOp.SeqId,
+					OpType:   OperationType(grpcOp.OpType),
+					Key:      keyStr,
+					Value:    valueStr,
+					Klen:     int(grpcOp.Klen),
+					Vlen:     int(grpcOp.Vlen),
+				})
+			}
 		}
 
 		entries[i] = LogEntry{
@@ -58,7 +77,14 @@ func convertFromGrpcLogEntries(grpcEntries []*G_LogEntry) []LogEntry {
 	}
 	return entries
 }
+
 func (s *RaftServer) Grpc_AppendEntries(ctx context.Context, req *G_AppendEntriesArgs) (*G_AppendEntriesReply, error) {
+	// 将 LeaderIP 从 []byte 转换为 string
+	leaderIP := ""
+	if req.LeaderIP != nil {
+		leaderIP = string(req.LeaderIP)
+	}
+
 	args := &AppendEntriesArgs{
 		Term:     int(req.Term),
 		LeaderId: int(req.LeaderId),
@@ -68,14 +94,15 @@ func (s *RaftServer) Grpc_AppendEntries(ctx context.Context, req *G_AppendEntrie
 		Entries:      convertFromGrpcLogEntries(req.Entries),
 
 		LeaderCommit: int(req.LeaderCommit),
-		LeaderIP:     string(req.LeaderIP),
+		LeaderIP:     leaderIP,
 	}
+
 	reply := &AppendEntriesReply{}
 	s.raftNode.AppendEntries(args, reply)
-	return &G_AppendEntriesReply{
-		Term:    int64(reply.Term),
-		Success: reply.Success,
 
+	return &G_AppendEntriesReply{
+		Term:          int64(reply.Term),
+		Success:       reply.Success,
 		ConflictIndex: int64(reply.ConfilictIndex),
 		ConflictTerm:  int64(reply.ConfilictTerm),
 	}, nil

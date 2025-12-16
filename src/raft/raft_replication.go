@@ -3,9 +3,10 @@ package raft
 import (
 	"context"
 	//"encoding/json"
+	"fmt"
 	"sort"
+	"sync"
 	"sync/atomic"
-
 	"time"
 )
 
@@ -51,6 +52,20 @@ type AppendEntriesReply struct {
 	ConfilictIndex int // 冲突的索引号
 	ConfilictTerm  int // 冲突的任期号
 }
+
+var (
+	gLogEntryPool = sync.Pool{
+		New: func() interface{} {
+			return &G_LogEntry{}
+		},
+	}
+
+	gOpPool = sync.Pool{
+		New: func() interface{} {
+			return &G_Op{}
+		},
+	}
+)
 
 // reply为传出参数
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -120,74 +135,154 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 }
 
-// 转换函数：内部 LogEntry  → gRPC LogEntry
+// 转换函数：内部 LogEntry → gRPC LogEntry（bytes版本）
 func convertToGrpcLogEntries(entries []LogEntry) []*G_LogEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+
 	grpcEntries := make([]*G_LogEntry, len(entries))
+
 	for i, entry := range entries {
-		// 直接转换，无需序列化
-		var grpcOps []*G_Op
-		for _, op := range entry.Command {
-			grpcOps = append(grpcOps, &G_Op{
-				ClientId: op.ClientId,
-				SeqId:    op.SeqId,
-				OpType:   uint32(op.OpType),
-				Key:      op.Key,
-				Value:    op.Value,
-				Klen:     int64(op.Klen),
-				Vlen:     int64(op.Vlen),
-			})
+		// 从池中获取G_LogEntry
+		grpcEntry := gLogEntryPool.Get().(*G_LogEntry)
+		grpcEntry.Term = int32(entry.Term)
+		grpcEntry.CommandValid = entry.CommandValid
+		grpcEntry.CommandIndex = int32(entry.CommandIndex)
+
+		// 预分配Command切片
+		if cap(grpcEntry.Command) >= len(entry.Command) {
+			grpcEntry.Command = grpcEntry.Command[:len(entry.Command)]
+		} else {
+			grpcEntry.Command = make([]*G_Op, len(entry.Command))
 		}
 
-		grpcEntries[i] = &G_LogEntry{
-			Term:         int32(entry.Term),
-			CommandValid: entry.CommandValid,
-			Command:      grpcOps,
-			CommandIndex: int32(entry.CommandIndex),
+		// 填充Command
+		for j, op := range entry.Command {
+			var gOp *G_Op
+			if j < len(grpcEntry.Command) && grpcEntry.Command[j] != nil {
+				gOp = grpcEntry.Command[j]
+			} else {
+				gOp = gOpPool.Get().(*G_Op)
+				grpcEntry.Command[j] = gOp
+			}
+
+			gOp.ClientId = op.ClientId
+			gOp.SeqId = op.SeqId
+			gOp.OpType = uint32(op.OpType)
+
+			// 将 string 转换为 []byte
+			// 关键：创建新的 []byte 副本，避免共享底层数组
+			if op.Key != "" {
+				keyBytes := make([]byte, len(op.Key))
+				copy(keyBytes, op.Key)
+				gOp.Key = keyBytes
+			} else {
+				gOp.Key = nil
+			}
+
+			if op.Value != "" {
+				valueBytes := make([]byte, len(op.Value))
+				copy(valueBytes, op.Value)
+				gOp.Value = valueBytes
+			} else {
+				gOp.Value = nil
+			}
+
+			gOp.Klen = int64(op.Klen)
+			gOp.Vlen = int64(op.Vlen)
 		}
+
+		grpcEntries[i] = grpcEntry
 	}
+
 	return grpcEntries
+}
+
+// 对应的清理函数（需要修改）
+func recycleGrpcLogEntries(entries []*G_LogEntry) {
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+
+		// 回收Command中的G_Op
+		for _, gOp := range entry.Command {
+			if gOp != nil {
+				// 重置字段（对于 []byte，设置为 nil）
+				gOp.Key = nil
+				gOp.Value = nil
+				gOpPool.Put(gOp)
+			}
+		}
+
+		// 重置G_LogEntry
+		entry.Command = entry.Command[:0]
+		gLogEntryPool.Put(entry)
+	}
 }
 
 // 包装sendAppendEntries以进行性能监控
 func (rf *Raft) sendAppendEntriesWithMetrics(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	start := time.Now()
 	defer func() {
-		duration := time.Since(start).Nanoseconds() / int64(time.Millisecond)
+		duration := time.Since(start)
 
 		if len(args.Entries) > 0 {
 			// 真正的日志复制
 			atomic.AddInt64(&rf.perfStats.appendRpcCount, 1)
-			atomic.AddInt64(&rf.perfStats.appendRpcTime, duration)
+			atomic.AddInt64(&rf.perfStats.appendRpcTime, duration.Milliseconds())
+			// 记录慢RPC
+			if duration > 50*time.Millisecond {
+				fmt.Printf("Slow AppendEntries to S%d: %v, entries=%d\n", server, duration, len(args.Entries))
+			}
 		} else {
 			// 心跳
 			atomic.AddInt64(&rf.perfStats.heartbeatCount, 1)
-			atomic.AddInt64(&rf.perfStats.heartbeatTime, duration)
+			atomic.AddInt64(&rf.perfStats.heartbeatTime, duration.Milliseconds())
+			// if duration > 10*time.Millisecond {
+			// 	fmt.Printf("Slow heartbeat to S%d: %v\n", server, duration)
+			// }
 		}
 	}()
 
 	return rf.sendAppendEntries(server, args, reply)
 }
+
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	if rf.me == server {
 		return false
 	}
-
+	grpcEntries := convertToGrpcLogEntries(args.Entries)
+	leaderIPBytes := []byte(args.LeaderIP)
 	grpcArgs := &G_AppendEntriesArgs{
 		Term:         int64(args.Term),
 		LeaderId:     int64(args.LeaderId),
 		PrevLogIndex: int64(args.PrevLogIndex),
 		PrevLogTerm:  int64(args.PrevLogTerm),
-		Entries:      convertToGrpcLogEntries(args.Entries),
+		Entries:      grpcEntries,
 		LeaderCommit: int64(args.LeaderCommit),
-		LeaderIP:     string(args.LeaderIP),
+		LeaderIP:     leaderIPBytes,
 	}
 
+	timeout := 300 * time.Millisecond // 默认200ms
+	// if len(args.Entries) == 0 {
+	// 	timeout = 50 * time.Millisecond // 心跳超时50ms
+	// } else if len(args.Entries) < 10 {
+	// 	timeout = 50 * time.Millisecond // 小批量超时100ms
+	// }
 	// 设置超时上下文
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	// 回收gRPC对象
 	grpcReply, err := rf.peers[server].Grpc_AppendEntries(ctx, grpcArgs)
+	// 回收gRPC对象
+	recycleGrpcLogEntries(grpcEntries)
 	if err != nil {
+		if len(args.Entries) > 0 {
+			fmt.Printf("Grpc_AppendEntries发送给 S%d 失败, err=%v\n", server, err)
+		}
 		return false
 	}
 	reply.Term = int(grpcReply.Term)
@@ -203,7 +298,6 @@ func (rf *Raft) getMajorityIndexLocked() int {
 	copy(tmpIndexs, rf.matchIndex)
 	sort.Ints(sort.IntSlice(tmpIndexs))       // 排序
 	majorityIndex := (len(tmpIndexs) - 1) / 2 // 取中位数，代表一半以上已经复制了的日志
-	//majorityIndex := len(tmpIndexs) / 2  // 3节点时取索引1（第2个节点的值）
 	LOG(rf.me, rf.currentTerm, DDebug, "Match index after sort: %v, majority[%d]=%d", tmpIndexs, majorityIndex, tmpIndexs[majorityIndex])
 	return tmpIndexs[majorityIndex] // 返回对应的日志号
 }

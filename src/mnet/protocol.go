@@ -177,27 +177,39 @@ func addToBatch(op raft.Op, conn net.Conn, kv *server.KVServer, rf *raft.Raft, s
 	}
 }
 
+var opPool = sync.Pool{
+	New: func() interface{} {
+		return &raft.Op{}
+	},
+}
+
 // Commited 函数修改为使用批量管理器
 func Commited(optype raft.OperationType, key string, klen int, value string, vlen int, conn net.Conn, kv *server.KVServer,
 	rf *raft.Raft, timer *time.Timer, safeWrite func([]byte)) {
+
 	if _, isLeader := rf.GetState(); !isLeader {
 		safeWrite([]byte("LeaderIP is  " + rf.LeaderIP + "\n"))
 		return
 	}
 
-	op := raft.Op{
-		OpType:   optype,
-		Key:      key,
-		Klen:     klen,
-		Value:    value,
-		Vlen:     vlen,
-		ClientId: generateClientID(conn),
-		SeqId:    generateSeqID(),
-	}
-	addToBatch(op, conn, kv, rf, safeWrite)
+	// 从对象池获取Op
+	op := opPool.Get().(*raft.Op)
+	op.OpType = optype
+	op.Key = key
+	op.Klen = klen
+	op.Value = value
+	op.Vlen = vlen
+	op.ClientId = generateClientID(conn)
+	op.SeqId = generateSeqID()
+
+	addToBatch(*op, conn, kv, rf, safeWrite)
+
+	// 放回对象池
+	opPool.Put(op)
+
 	safeWrite([]byte("ACK\n"))
 
-	// Reset timer using configured timeout
+	// Reset timer
 	bm := GetBatchManager()
 	if !timer.Stop() {
 		<-timer.C

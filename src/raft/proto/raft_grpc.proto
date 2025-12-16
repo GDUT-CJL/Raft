@@ -19,8 +19,8 @@ message G_Op {
     int64 ClientId = 1;
     int64 SeqId = 2;
     uint32 OpType = 3;
-    string Key = 4;
-    string Value = 5;
+    bytes  Key = 4;
+    bytes  Value = 5;
     int64 Klen = 6;
     int64 Vlen = 7;
 }
@@ -49,7 +49,7 @@ message G_AppendEntriesArgs{
  	int64 PrevLogTerm = 4;
   	repeated G_LogEntry Entries = 5;  // 使用 repeated 表示数组
   	int64 LeaderCommit = 6;
-	string LeaderIP = 7;
+	bytes LeaderIP = 7;
 }
 message G_AppendEntriesReply{
 	int64 Term = 1;
