@@ -30,10 +30,19 @@ func startNode(cfg config.NodeConfig, clusterConfigs []config.NodeConfig, nodeId
 	}
 
 	// 初始化批量管理器
-	mnet.InitBatchManager(batchConfig.BatchSize, batchConfig.BatchTimeout)
-
+	var batchSize int
+	var batchTimeout time.Duration
+	if batchConfig.BatchSize > 0 {
+		batchSize = batchConfig.BatchSize
+		// 这里给一个很大的值表示不使用这个功能
+		batchTimeout = 10000000000000
+	} else {
+		batchSize = 1
+		batchTimeout = batchConfig.BatchTimeout
+	}
+	mnet.InitBatchManager(batchSize, batchTimeout)
 	fmt.Printf("Batch configuration - Size: %d, Timeout: %v\n",
-		batchConfig.BatchSize, batchConfig.BatchTimeout)
+		batchSize, batchTimeout)
 
 	var kv *server.KVServer
 	if cfg.ID == nodeId {

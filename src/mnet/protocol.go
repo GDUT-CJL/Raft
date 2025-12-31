@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -103,14 +104,7 @@ func sendBatch(kv *server.KVServer, conn net.Conn, batch []raft.Op, rf *raft.Raf
 
 	select {
 	case <-notifyCh:
-		// 提交成功后，验证数据是否真的写入
-		if verifyBatchApplied(batch) {
-			safeWrite([]byte("BATCH_OK\n"))
-			//fmt.Printf("[BATCH_SUCCESS] Batch of %d operations applied successfully\n", len(batch))
-		} else {
-			safeWrite([]byte("BATCH_APPLY_FAILED\n"))
-			//fmt.Printf("[BATCH_FAILED] Batch of %d operations failed to apply\n", len(batch))
-		}
+		safeWrite([]byte("BATCH_OK\n"))
 
 	case <-time.After(30 * time.Second):
 		safeWrite([]byte("BATCH_TIMEOUT\n"))
@@ -118,28 +112,6 @@ func sendBatch(kv *server.KVServer, conn net.Conn, batch []raft.Op, rf *raft.Raf
 	}
 
 	kv.RemoveNotifyChannel(index)
-}
-
-// 验证批量操作是否真的应用了
-func verifyBatchApplied(batch []raft.Op) bool {
-	for _, op := range batch {
-		switch op.OpType {
-		case server.Set, server.RSet, server.HSet, server.BSet, server.ZSet, server.RCSet:
-			// 验证键是否存在
-			if !verifyKeyExists(op.Key) {
-				fmt.Printf("[VERIFY_FAILED] Key not found after write: %s\n", op.Key)
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func verifyKeyExists(key string) bool {
-	// 根据当前数据结构验证键是否存在
-	// 这里需要根据您的实际情况实现
-	value := bridge.RB_Get(key, len(key))
-	return len(value) != 0
 }
 
 // flushBatch 修改为使用批量管理器
@@ -288,7 +260,9 @@ func parseRESP(reader *bufio.Reader) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-
+		if crlf[0] != '\r' || crlf[1] != '\n' {
+			return nil, fmt.Errorf("expected CRLF after bulk string (element %d), got [%d %d]", i, crlf[0], crlf[1])
+		}
 		parts = append(parts, buffer.String())
 	}
 
@@ -309,19 +283,6 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 	}
 	rf := kv.GetRaft()
 	quitCh := make(chan struct{})
-	defer func() {
-		for i := 0; i < 3; i++ {
-			flushBatch(kv, conn, rf, safeWrite)
-			time.Sleep(50 * time.Millisecond)
-		}
-		close(quitCh)
-
-		bm := GetBatchManager()
-		bm.batchMutex.Lock()
-		delete(bm.batchBufferMap, conn)
-		bm.batchMutex.Unlock()
-		conn.Close()
-	}()
 	reader := bufio.NewReaderSize(conn, 128*1024)
 
 	// Start a timer with configured timeout
@@ -347,7 +308,17 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 		var action string
 
 		if err != nil {
-			// 直接关闭连接或返回错误，不要回退到文本协议
+			if err == io.EOF {
+				conn.Close()
+				break
+			}
+			// 关键修复：只要解析失败，就丢弃本次请求之后的所有残留数据
+			// 避免下一次循环读到“半截”的 RESP 数据
+			if reader.Buffered() > 0 {
+				reader.Discard(reader.Buffered())
+			}
+
+			fmt.Printf("RESP parse error: %v\n", err)
 			safeWrite([]byte("ERR invalid RESP format\n"))
 			continue
 		} else {
@@ -357,9 +328,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				continue
 			}
 			action = strings.ToUpper(parts[0])
-			//debugPrintParts(parts)
 		}
-
 		switch action {
 		// Array
 		case "SET":
@@ -657,10 +626,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 			} else {
 				safeWrite([]byte("isCluster\n"))
 			}
-		// case "STATS":
-		// 	stats := rf.GetPerformanceStats()
-		// 	statsJSON, _ := json.Marshal(stats)
-		// 	safeWrite([]byte(string(statsJSON) + "\n"))
+
 		case "DET":
 			rf := kv.GetRaft()
 			state := rf.GetDetailedState()

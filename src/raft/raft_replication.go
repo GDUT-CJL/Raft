@@ -3,7 +3,7 @@ package raft
 import (
 	"context"
 	//"encoding/json"
-	"fmt"
+	//"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -233,9 +233,9 @@ func (rf *Raft) sendAppendEntriesWithMetrics(server int, args *AppendEntriesArgs
 			atomic.AddInt64(&rf.perfStats.appendRpcCount, 1)
 			atomic.AddInt64(&rf.perfStats.appendRpcTime, duration.Milliseconds())
 			// 记录慢RPC
-			if duration > 50*time.Millisecond {
-				fmt.Printf("Slow AppendEntries to S%d: %v, entries=%d\n", server, duration, len(args.Entries))
-			}
+			// if duration > 50*time.Millisecond {
+			// 	fmt.Printf("Slow AppendEntries to S%d: %v, entries=%d\n", server, duration, len(args.Entries))
+			// }
 		} else {
 			// 心跳
 			atomic.AddInt64(&rf.perfStats.heartbeatCount, 1)
@@ -265,7 +265,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		LeaderIP:     leaderIPBytes,
 	}
 
-	timeout := 300 * time.Millisecond // 默认200ms
+	timeout := 200 * time.Millisecond // 默认200ms
 	// if len(args.Entries) == 0 {
 	// 	timeout = 50 * time.Millisecond // 心跳超时50ms
 	// } else if len(args.Entries) < 10 {
@@ -281,7 +281,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	recycleGrpcLogEntries(grpcEntries)
 	if err != nil {
 		if len(args.Entries) > 0 {
-			fmt.Printf("Grpc_AppendEntries发送给 S%d 失败, err=%v\n", server, err)
+			//fmt.Printf("Grpc_AppendEntries发送给 S%d 失败, err=%v\n", server, err)
 		}
 		return false
 	}
