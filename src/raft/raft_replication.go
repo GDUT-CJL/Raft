@@ -2,11 +2,9 @@ package raft
 
 import (
 	"context"
-	//"encoding/json"
-	//"fmt"
 	"sort"
-	"sync"
-	"sync/atomic"
+	//"sync"
+	"fmt"
 	"time"
 )
 
@@ -53,23 +51,8 @@ type AppendEntriesReply struct {
 	ConfilictTerm  int // 冲突的任期号
 }
 
-var (
-	gLogEntryPool = sync.Pool{
-		New: func() interface{} {
-			return &G_LogEntry{}
-		},
-	}
-
-	gOpPool = sync.Pool{
-		New: func() interface{} {
-			return &G_Op{}
-		},
-	}
-)
-
 // reply为传出参数
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	//fmt.Printf("leaderid = %d 在任期 %d 发出AppendEntries\n",args.LeaderId,args.Term)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	LOG(rf.me, rf.currentTerm, DDebug, "<- S%d, Receive log, Prev=[%d]T%d, Len()=%d", args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries))
@@ -135,7 +118,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 }
 
-// 转换函数：内部 LogEntry → gRPC LogEntry（bytes版本）
+// 转换函数：内部 LogEntry → gRPC LogEntry（bytes版本）- 简化版本，不使用对象池
 func convertToGrpcLogEntries(entries []LogEntry) []*G_LogEntry {
 	if len(entries) == 0 {
 		return nil
@@ -144,53 +127,42 @@ func convertToGrpcLogEntries(entries []LogEntry) []*G_LogEntry {
 	grpcEntries := make([]*G_LogEntry, len(entries))
 
 	for i, entry := range entries {
-		// 从池中获取G_LogEntry
-		grpcEntry := gLogEntryPool.Get().(*G_LogEntry)
-		grpcEntry.Term = int32(entry.Term)
-		grpcEntry.CommandValid = entry.CommandValid
-		grpcEntry.CommandIndex = int32(entry.CommandIndex)
-
-		// 预分配Command切片
-		if cap(grpcEntry.Command) >= len(entry.Command) {
-			grpcEntry.Command = grpcEntry.Command[:len(entry.Command)]
-		} else {
-			grpcEntry.Command = make([]*G_Op, len(entry.Command))
+		// 直接创建新的 G_LogEntry，不使用对象池
+		grpcEntry := &G_LogEntry{
+			Term:         int32(entry.Term),
+			CommandValid: entry.CommandValid,
+			CommandIndex: int32(entry.CommandIndex),
 		}
 
-		// 填充Command
-		for j, op := range entry.Command {
-			var gOp *G_Op
-			if j < len(grpcEntry.Command) && grpcEntry.Command[j] != nil {
-				gOp = grpcEntry.Command[j]
-			} else {
-				gOp = gOpPool.Get().(*G_Op)
+		// 创建 Command 切片
+		if len(entry.Command) > 0 {
+			grpcEntry.Command = make([]*G_Op, len(entry.Command))
+
+			for j, op := range entry.Command {
+				// 直接创建新的 G_Op，不使用对象池
+				gOp := &G_Op{
+					ClientId: op.ClientId,
+					SeqId:    op.SeqId,
+					OpType:   uint32(op.OpType),
+					Klen:     int64(op.Klen),
+					Vlen:     int64(op.Vlen),
+				}
+
+				// 将 string 转换为 []byte
+				if op.Key != "" {
+					keyBytes := make([]byte, len(op.Key))
+					copy(keyBytes, op.Key)
+					gOp.Key = keyBytes
+				}
+
+				if op.Value != "" {
+					valueBytes := make([]byte, len(op.Value))
+					copy(valueBytes, op.Value)
+					gOp.Value = valueBytes
+				}
+
 				grpcEntry.Command[j] = gOp
 			}
-
-			gOp.ClientId = op.ClientId
-			gOp.SeqId = op.SeqId
-			gOp.OpType = uint32(op.OpType)
-
-			// 将 string 转换为 []byte
-			// 关键：创建新的 []byte 副本，避免共享底层数组
-			if op.Key != "" {
-				keyBytes := make([]byte, len(op.Key))
-				copy(keyBytes, op.Key)
-				gOp.Key = keyBytes
-			} else {
-				gOp.Key = nil
-			}
-
-			if op.Value != "" {
-				valueBytes := make([]byte, len(op.Value))
-				copy(valueBytes, op.Value)
-				gOp.Value = valueBytes
-			} else {
-				gOp.Value = nil
-			}
-
-			gOp.Klen = int64(op.Klen)
-			gOp.Vlen = int64(op.Vlen)
 		}
 
 		grpcEntries[i] = grpcEntry
@@ -199,62 +171,20 @@ func convertToGrpcLogEntries(entries []LogEntry) []*G_LogEntry {
 	return grpcEntries
 }
 
-// 对应的清理函数（需要修改）
-func recycleGrpcLogEntries(entries []*G_LogEntry) {
-	for _, entry := range entries {
-		if entry == nil {
-			continue
-		}
-
-		// 回收Command中的G_Op
-		for _, gOp := range entry.Command {
-			if gOp != nil {
-				// 重置字段（对于 []byte，设置为 nil）
-				gOp.Key = nil
-				gOp.Value = nil
-				gOpPool.Put(gOp)
-			}
-		}
-
-		// 重置G_LogEntry
-		entry.Command = entry.Command[:0]
-		gLogEntryPool.Put(entry)
-	}
-}
-
-// 包装sendAppendEntries以进行性能监控
-func (rf *Raft) sendAppendEntriesWithMetrics(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	start := time.Now()
-	defer func() {
-		duration := time.Since(start)
-
-		if len(args.Entries) > 0 {
-			// 真正的日志复制
-			atomic.AddInt64(&rf.perfStats.appendRpcCount, 1)
-			atomic.AddInt64(&rf.perfStats.appendRpcTime, duration.Milliseconds())
-			// 记录慢RPC
-			// if duration > 50*time.Millisecond {
-			// 	fmt.Printf("Slow AppendEntries to S%d: %v, entries=%d\n", server, duration, len(args.Entries))
-			// }
-		} else {
-			// 心跳
-			atomic.AddInt64(&rf.perfStats.heartbeatCount, 1)
-			atomic.AddInt64(&rf.perfStats.heartbeatTime, duration.Milliseconds())
-			// if duration > 10*time.Millisecond {
-			// 	fmt.Printf("Slow heartbeat to S%d: %v\n", server, duration)
-			// }
-		}
-	}()
-
-	return rf.sendAppendEntries(server, args, reply)
-}
-
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	if rf.me == server {
 		return false
 	}
+
+	// 创建新的 gRPC 参数对象，不使用对象池
 	grpcEntries := convertToGrpcLogEntries(args.Entries)
-	leaderIPBytes := []byte(args.LeaderIP)
+
+	// 注意：LeaderIP 可能为空，需要检查
+	var leaderIPBytes []byte
+	if args.LeaderIP != "" {
+		leaderIPBytes = []byte(args.LeaderIP)
+	}
+
 	grpcArgs := &G_AppendEntriesArgs{
 		Term:         int64(args.Term),
 		LeaderId:     int64(args.LeaderId),
@@ -265,23 +195,20 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		LeaderIP:     leaderIPBytes,
 	}
 
-	timeout := 200 * time.Millisecond // 默认200ms
-	// if len(args.Entries) == 0 {
-	// 	timeout = 50 * time.Millisecond // 心跳超时50ms
-	// } else if len(args.Entries) < 10 {
-	// 	timeout = 50 * time.Millisecond // 小批量超时100ms
-	// }
+	timeout := 200 * time.Millisecond // 默认100ms
+
 	// 设置超时上下文
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// 回收gRPC对象
 	grpcReply, err := rf.peers[server].Grpc_AppendEntries(ctx, grpcArgs)
-	// 回收gRPC对象
-	recycleGrpcLogEntries(grpcEntries)
+
+	// 注意：这里我们不再尝试回收对象，让GC自动处理
+
 	if err != nil {
+		// 仅在真实日志复制失败时打印错误，避免心跳噪音
 		if len(args.Entries) > 0 {
-			//fmt.Printf("Grpc_AppendEntries发送给 S%d 失败, err=%v\n", server, err)
+			fmt.Printf("Grpc_AppendEntries发送给 S%d 失败, err=%v, entries=%d\n", server, err, len(args.Entries))
 		}
 		return false
 	}
@@ -306,7 +233,7 @@ func (rf *Raft) getMajorityIndexLocked() int {
 func (rf *Raft) startReplication(term int) bool {
 	replicateToPeer := func(peer int, args *AppendEntriesArgs) {
 		reply := &AppendEntriesReply{}
-		ok := rf.sendAppendEntriesWithMetrics(peer, args, reply)
+		ok := rf.sendAppendEntries(peer, args, reply)
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 		if !ok {
