@@ -691,7 +691,12 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				continue
 			}
 			Commited(server.RCDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer, safeWrite)
-
+		case "LEADER":
+			if len(parts) != 1 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hget' command")
+				continue
+			}
+			sendRESPResponse(safeWrite, "bulk", rf.LeaderIP)
 		default:
 			sendRESPResponse(safeWrite, "error", fmt.Sprintf("ERR unknown command '%s'", action))
 		}

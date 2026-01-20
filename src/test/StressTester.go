@@ -69,7 +69,7 @@ func (st *StressTester) runClient(clientID int) {
 		duration := time.Since(start)
 		st.results <- duration
 
-		if response != "ACK\n" && response != "BATCH_OK\n" {
+		if response != "+OK\r\n" {
 			fmt.Printf("Client %d: Unexpected response: %s\n", clientID, response)
 		}
 	}

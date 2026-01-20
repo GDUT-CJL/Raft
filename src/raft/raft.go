@@ -424,7 +424,9 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 	rf.readPersist(rf.persister.ReadRaftState())
 	go func() {
 		// 监听自己对应的ip和端口
-		lis, err := net.Listen("tcp", "0.0.0.0:8001")
+		lis, err := net.Listen("tcp", peerAddrs[me])
+
+		// lis, err := net.Listen("tcp", "0.0.0.0:8001")
 		if err != nil {
 			fmt.Println("failed here")
 			log.Fatalf("failed to listen: %v", err)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"strconv"
 	"time"
 )
 
@@ -20,7 +21,8 @@ func getLocalIP() (string, error) {
 		if ipnet, ok := addr.(*net.IPNet); ok {
 			// 排除回环地址（如 127.0.0.1）和 IPv6 地址（可选）
 			if !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
-				return ipnet.IP.String() + ":8000", nil
+				return ipnet.IP.String(), nil
+				// return ipnet.IP.String() + ":8000", nil
 			}
 		}
 	}
@@ -214,7 +216,9 @@ func (rf *Raft) startElection(term int) {
 					fmt.Println("Error:", err)
 					return
 				}
-				rf.LeaderIP = ip
+				var port int
+				port = 8006 + rf.me
+				rf.LeaderIP = ip + ":" + strconv.Itoa(port)
 				fmt.Printf(" Node %d become leader IP:%s\n", rf.me, rf.LeaderIP)
 				// 发起心跳和日志同步，通知其他成员我已经是leader并开始复制我的日志
 				go rf.replicationTicker(term)
