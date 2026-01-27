@@ -69,15 +69,20 @@ func (rf *Raft) heartbeatTicker(term int) {
 			return
 		}
 
-		// 快速发送心跳给所有节点
+		now := time.Now()
+		rf.lastHeartbeatTime = now
+		rf.leaseExpiration = now.Add(rf.leaseDuration)
+
+		// 遍历所有 peer，发送心跳（除了自己）
 		for peer := 0; peer < len(rf.peers); peer++ {
 			if peer != rf.me {
 				go rf.sendHeartbeat(peer, term)
 			}
 		}
+
 		rf.mu.Unlock()
 
-		// 更频繁的心跳间隔（100ms）
+		// 心跳间隔：比如每 100ms 发送一轮
 		time.Sleep(100 * time.Millisecond)
 	}
 }

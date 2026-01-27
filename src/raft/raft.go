@@ -121,6 +121,12 @@ type Raft struct {
 		heartbeatTime  int64     // 心跳总耗时
 		lastResetTime  time.Time // 上次重置时间
 	}
+
+	// ===== 新增：Lease Read 相关字段 =====
+	lastHeartbeatTime time.Time     // Leader 上次发送心跳的时间
+	leaseExpiration   time.Time     // 当前租约的过期时间
+	leaseDuration     time.Duration // 租约持续时间，例如 200ms
+	enableLeaseRead   bool          // 是否启用 Lease Read（默认 true）
 }
 
 // 性能统计数据结构
@@ -222,6 +228,21 @@ func (rf *Raft) GetLogConsistencyState() map[string]interface{} {
 
 	return state
 }
+
+// CanServeLeaseRead 判断当前节点（必须是 Leader）是否可以安全地执行 Lease Read
+// 即当前是否处于 Lease 有效期内，可线性一致读本地状态机
+func (rf *Raft) CanServeLeaseRead() bool {
+	rf.mu.RLock()
+	defer rf.mu.RUnlock()
+
+	if rf.role != Leader {
+		return false // 只有 Leader 才能提供 Lease Read
+	}
+
+	now := time.Now()
+	return now.Before(rf.leaseExpiration)
+}
+
 func (rf *Raft) GetPeerLen() int {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -404,6 +425,12 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 	rf.role = Follower
 	rf.currentTerm = 1
 	rf.votedFor = -1
+
+	// ===== 初始化 Lease Read 相关字段 =====
+	rf.leaseDuration = 200 * time.Millisecond // 可调，建议小于 MinElectionTimeout
+	rf.lastHeartbeatTime = time.Now()         // 初始化为当前时间
+	rf.leaseExpiration = rf.lastHeartbeatTime.Add(rf.leaseDuration)
+	rf.enableLeaseRead = true // 默认开启 Lease Read
 
 	// log初始化为空，类似于一个空的头节点，避免边界的检查
 	//rf.log.append(LogEntry{Term:InvalidTerm})

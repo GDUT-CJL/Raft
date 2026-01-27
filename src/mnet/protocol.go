@@ -454,8 +454,12 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'get' command")
 				continue
 			}
-			value := bridge.Array_Get(parts[1], len(parts[1]))
-			sendRESPResponse(safeWrite, "bulk", value)
+			// 1. 如果当前是 Leader 且可以 Lease Read，则直接读本地状态机
+			if ok := rf.CanServeLeaseRead(); ok {
+				// 直接读取本地状态机（线性一致，因为 Lease 保证了 Leader 未变更）
+				value := bridge.Array_Get(parts[1], len(parts[1]))
+				sendRESPResponse(safeWrite, "bulk", value)
+			}
 
 		case "COUNT":
 			if len(parts) != 1 {
