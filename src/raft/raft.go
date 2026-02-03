@@ -113,18 +113,11 @@ type Raft struct {
 	LeaderIP string
 	//restartProtected bool       // 重启保护标志
 	restartTime time.Time // 重启时间
-	perfStats   struct {
-		mu             sync.RWMutex
-		appendRpcCount int64     // 真正的日志复制次数
-		appendRpcTime  int64     // 日志复制总耗时
-		heartbeatCount int64     // 心跳次数
-		heartbeatTime  int64     // 心跳总耗时
-		lastResetTime  time.Time // 上次重置时间
-	}
 
 	// ===== 新增：Lease Read 相关字段 =====
 	lastHeartbeatTime time.Time     // Leader 上次发送心跳的时间
 	leaseExpiration   time.Time     // 当前租约的过期时间
+	leaseReadIndex    int           // 租约读取时的 commitIndex
 	leaseDuration     time.Duration // 租约持续时间，例如 200ms
 	enableLeaseRead   bool          // 是否启用 Lease Read（默认 true）
 }
@@ -139,110 +132,59 @@ type PerformanceStats struct {
 	MeasurementDuration string  `json:"measurement_duration"`
 }
 
-// 获取性能统计
-func (rf *Raft) GetPerformanceStats() PerformanceStats {
-	appendCount := atomic.LoadInt64(&rf.perfStats.appendRpcCount)
-	appendTime := atomic.LoadInt64(&rf.perfStats.appendRpcTime)
-	heartbeatCount := atomic.LoadInt64(&rf.perfStats.heartbeatCount)
-	heartbeatTime := atomic.LoadInt64(&rf.perfStats.heartbeatTime)
-	var appendAvg float64
-	var heartbeatAvg float64
-	if appendCount > 0 {
-		appendAvg = float64(appendTime) / float64(appendCount)
-	}
-	if heartbeatCount > 0 {
-		heartbeatAvg = float64(heartbeatTime) / float64(heartbeatCount)
-
-	}
-	return PerformanceStats{
-		AppendRpcCount:      appendCount,
-		AppendRpcAvgTime:    appendAvg,
-		HeartbeatCount:      heartbeatCount,
-		HeartbeatAvgTime:    heartbeatAvg,
-		TotalRpcTime:        appendTime,
-		MeasurementDuration: time.Since(rf.perfStats.lastResetTime).String(),
-	}
-}
-
-// 重置性能统计
-func (rf *Raft) ResetPerformanceStats() {
-	atomic.StoreInt64(&rf.perfStats.appendRpcCount, 0)
-	atomic.StoreInt64(&rf.perfStats.appendRpcTime, 0)
-	rf.perfStats.lastResetTime = time.Now()
-}
-
-// 获取详细的Raft状态信息
-func (rf *Raft) GetDetailedState() map[string]interface{} {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	state := make(map[string]interface{})
-	state["role"] = string(rf.role)
-	state["currentTerm"] = rf.currentTerm
-	state["votedFor"] = rf.votedFor
-	state["commitIndex"] = rf.commitIndex
-	state["lastApplied"] = rf.lastApplied
-	state["logSize"] = rf.log.size()
-	state["snapLastIdx"] = rf.log.snapLastIdx
-	state["snapLastTerm"] = rf.log.snapLastTerm
-
-	// 复制进度信息
-	nextIndex := make(map[int]int)
-	matchIndex := make(map[int]int)
-	for i := 0; i < len(rf.peers); i++ {
-		if i != rf.me {
-			nextIndex[i] = rf.nextIndex[i]
-			matchIndex[i] = rf.matchIndex[i]
-		}
-	}
-	state["nextIndex"] = nextIndex
-	state["matchIndex"] = matchIndex
-
-	// 性能统计
-	stats := rf.GetPerformanceStats()
-	state["performance"] = stats
-
-	return state
-}
-
-// 获取日志一致性状态
-func (rf *Raft) GetLogConsistencyState() map[string]interface{} {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	state := make(map[string]interface{})
-	state["logSize"] = rf.log.size()
-	state["commitIndex"] = rf.commitIndex
-	state["lastApplied"] = rf.lastApplied
-
-	peerStates := make(map[int]map[string]int)
-	for peer := 0; peer < len(rf.peers); peer++ {
-		if peer != rf.me {
-			peerStates[peer] = map[string]int{
-				"nextIndex":  rf.nextIndex[peer],
-				"matchIndex": rf.matchIndex[peer],
-			}
-		}
-	}
-	state["peerStates"] = peerStates
-
-	return state
-}
-
 // CanServeLeaseRead 判断当前节点（必须是 Leader）是否可以安全地执行 Lease Read
 // 即当前是否处于 Lease 有效期内，可线性一致读本地状态机
-func (rf *Raft) CanServeLeaseRead() bool {
+func (rf *Raft) IsLeaseValid() bool {
 	rf.mu.RLock()
 	defer rf.mu.RUnlock()
-
-	if rf.role != Leader {
-		return false // 只有 Leader 才能提供 Lease Read
-	}
 
 	now := time.Now()
 	return now.Before(rf.leaseExpiration)
 }
 
+// 重置租约（不再是 leader 时调用）
+func (rf *Raft) resetLease() {
+
+	rf.leaseExpiration = time.Time{} // 零值表示租约无效
+}
+
+// 获取租约读取的 commitIndex
+func (rf *Raft) GetLeaseReadIndex() int {
+	rf.mu.RLock()
+	defer rf.mu.RUnlock()
+	return rf.leaseReadIndex
+}
+
+// 更新租约
+func (rf *Raft) updateLease() {
+	now := time.Now()
+	rf.lastHeartbeatTime = now
+	rf.leaseExpiration = now.Add(rf.leaseDuration)
+
+	rf.leaseReadIndex = rf.commitIndex
+
+}
+
+// Lease Read 方法 - 等待状态机应用到指定索引
+func (rf *Raft) WaitForApplied(index int) bool {
+	timeout := time.After(100 * time.Millisecond) // 等待超时
+
+	for {
+		rf.mu.Lock()
+		if rf.lastApplied >= index {
+			rf.mu.Unlock()
+			return true
+		}
+		rf.mu.Unlock()
+
+		select {
+		case <-time.After(1 * time.Millisecond):
+			continue
+		case <-timeout:
+			return false
+		}
+	}
+}
 func (rf *Raft) GetPeerLen() int {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -286,6 +228,7 @@ func (rf *Raft) becomeFollowerLocked(term int) {
 	if shouldPersist {
 		rf.persistLocked()
 	}
+	rf.resetLease() // 重置租约
 	rf.resetElectionTimerLocked()
 }
 
@@ -322,6 +265,7 @@ func (rf *Raft) becomeLeaderLocked() {
 		rf.matchIndex[peer] = 0            //先初始化为0
 	}
 	// 启动独立的心跳协程
+	rf.updateLease()
 	go rf.heartbeatTicker(rf.currentTerm)
 }
 
@@ -444,9 +388,6 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 	rf.applyCh = applyCh
 	rf.applyCond = sync.NewCond(&rf.mu)
 	rf.snapAppending = false
-	atomic.StoreInt64(&rf.perfStats.appendRpcCount, 0)
-	atomic.StoreInt64(&rf.perfStats.appendRpcTime, 0)
-	rf.perfStats.lastResetTime = time.Now()
 	// initialize from state persisted before a crash
 	rf.readPersist(rf.persister.ReadRaftState())
 	go func() {

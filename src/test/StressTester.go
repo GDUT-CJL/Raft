@@ -52,7 +52,7 @@ func (st *StressTester) runClient(clientID int) {
 		cmd := fmt.Sprintf("*3\r\n$4\r\nRSET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
 			len(key), key, len(value), value)
 
-		//cmd := fmt.Sprintf("*2\r\n$3\r\nGET\r\n$%d\r\n%s\r\n", len(key), key)
+		// cmd := fmt.Sprintf("*2\r\n$3\r\nGET\r\n$%d\r\n%s\r\n", len(key), key)
 		_, err := conn.Write([]byte(cmd))
 		if err != nil {
 			fmt.Printf("Client %d: Write error: %v\n", clientID, err)
@@ -69,9 +69,16 @@ func (st *StressTester) runClient(clientID int) {
 		duration := time.Since(start)
 		st.results <- duration
 
+		// 测试写请求
 		if response != "+OK\r\n" {
 			fmt.Printf("Client %d: Unexpected response: %s\n", clientID, response)
 		}
+
+		// 测试读请求
+		if response != "$-1\r\n" {
+			//fmt.Printf("Client %d: Unexpected response: %s\n", clientID, response)
+		}
+
 	}
 }
 

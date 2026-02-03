@@ -362,6 +362,30 @@ func sendRESPResponse(safeWrite func([]byte), respType string, data string) {
 	}
 }
 
+func checkLeaseRead(rf *raft.Raft, safeWrite func([]byte)) bool {
+	// 检查是否是 leader
+	_, isLeader := rf.GetState()
+	if !isLeader {
+		sendRESPResponse(safeWrite, "error", "ERR not leader")
+		return false
+	}
+
+	// 检查租约是否有效
+	if !rf.IsLeaseValid() {
+		sendRESPResponse(safeWrite, "error", "ERR lease expired")
+		return false
+	}
+
+	// 等待状态机应用到租约读取点
+	readIndex := rf.GetLeaseReadIndex()
+	if !rf.WaitForApplied(readIndex) {
+		sendRESPResponse(safeWrite, "error", "ERR wait for apply timeout")
+		return false
+	}
+
+	return true
+}
+
 // handleConnection 使用批量管理器
 func handleConnection(kv *server.KVServer, conn net.Conn) {
 	// 为每个连接创建专用的写入锁
@@ -454,20 +478,23 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'get' command")
 				continue
 			}
+
 			// 1. 如果当前是 Leader 且可以 Lease Read，则直接读本地状态机
-			if ok := rf.CanServeLeaseRead(); ok {
+			if ok := checkLeaseRead(rf, safeWrite); ok {
 				// 直接读取本地状态机（线性一致，因为 Lease 保证了 Leader 未变更）
 				value := bridge.Array_Get(parts[1], len(parts[1]))
 				sendRESPResponse(safeWrite, "bulk", value)
 			}
-
 		case "COUNT":
 			if len(parts) != 1 {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'count' command")
 				continue
 			}
-			value := bridge.Array_Count()
-			sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				// 直接读取本地状态机（线性一致，因为 Lease 保证了 Leader 未变更）
+				value := bridge.Array_Count()
+				sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			}
 
 		case "DELETE":
 			if len(parts) != 2 {
@@ -503,16 +530,22 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hget' command")
 				continue
 			}
-			value := bridge.Hash_Get(parts[1], len(parts[1]))
-			sendRESPResponse(safeWrite, "bulk", value)
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				// 直接读取本地状态机（线性一致，因为 Lease 保证了 Leader 未变更）
+				value := bridge.Hash_Get(parts[1], len(parts[1]))
+				sendRESPResponse(safeWrite, "bulk", value)
+			}
 
 		case "HCOUNT":
 			if len(parts) != 1 {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hcount' command")
 				continue
 			}
-			value := bridge.Hash_Count()
-			sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				// 直接读取本地状态机（线性一致，因为 Lease 保证了 Leader 未变更）
+				value := bridge.Hash_Count()
+				sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			}
 
 		case "HDELETE":
 			if len(parts) != 2 {
@@ -549,16 +582,23 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hget' command")
 				continue
 			}
-			value := bridge.RB_Get(parts[1], len(parts[1]))
-			sendRESPResponse(safeWrite, "bulk", value)
+
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				// 直接读取本地状态机（线性一致，因为 Lease 保证了 Leader 未变更）
+				value := bridge.RB_Get(parts[1], len(parts[1]))
+				sendRESPResponse(safeWrite, "bulk", value)
+			}
 
 		case "RCOUNT":
 			if len(parts) != 1 {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hcount' command")
 				continue
 			}
-			value := bridge.RB_Count()
-			sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				// 直接读取本地状态机（线性一致，因为 Lease 保证了 Leader 未变更）
+				value := bridge.RB_Count()
+				sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			}
 
 		case "RDELETE":
 			if len(parts) != 2 {
@@ -592,16 +632,22 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hget' command")
 				continue
 			}
-			value := bridge.BTree_Get(parts[1], len(parts[1]))
-			sendRESPResponse(safeWrite, "bulk", value)
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				// 直接读取本地状态机（线性一致，因为 Lease 保证了 Leader 未变更）
+				value := bridge.BTree_Get(parts[1], len(parts[1]))
+				sendRESPResponse(safeWrite, "bulk", value)
+			}
 
 		case "BCOUNT":
 			if len(parts) != 1 {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hcount' command")
 				continue
 			}
-			value := bridge.BTree_Count()
-			sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				// 直接读取本地状态机（线性一致，因为 Lease 保证了 Leader 未变更）
+				value := bridge.BTree_Count()
+				sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			}
 
 		case "BDELETE":
 			if len(parts) != 2 {
@@ -635,16 +681,22 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hget' command")
 				continue
 			}
-			value := bridge.Skiplist_Get(parts[1], len(parts[1]))
-			sendRESPResponse(safeWrite, "bulk", value)
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				// 直接读取本地状态机（线性一致，因为 Lease 保证了 Leader 未变更）
+				value := bridge.Skiplist_Get(parts[1], len(parts[1]))
+				sendRESPResponse(safeWrite, "bulk", value)
+			}
 
 		case "ZCOUNT":
 			if len(parts) != 1 {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hcount' command")
 				continue
 			}
-			value := bridge.Skiplist_Count()
-			sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				// 直接读取本地状态机（线性一致，因为 Lease 保证了 Leader 未变更）
+				value := bridge.Skiplist_Count()
+				sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			}
 
 		case "ZDELETE":
 			if len(parts) != 2 {
@@ -678,16 +730,22 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hget' command")
 				continue
 			}
-			value := bridge.RC_Get(parts[1])
-			sendRESPResponse(safeWrite, "bulk", value)
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				// 直接读取本地状态机（线性一致，因为 Lease 保证了 Leader 未变更）
+				value := bridge.RC_Get(parts[1])
+				sendRESPResponse(safeWrite, "bulk", value)
+			}
 
 		case "RCCOUNT":
 			if len(parts) != 1 {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hcount' command")
 				continue
 			}
-			value := bridge.RC_Count()
-			sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				// 直接读取本地状态机（线性一致，因为 Lease 保证了 Leader 未变更）
+				value := bridge.RC_Count()
+				sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			}
 
 		case "RCDELETE":
 			if len(parts) != 2 {

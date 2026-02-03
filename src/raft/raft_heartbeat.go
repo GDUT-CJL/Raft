@@ -52,7 +52,9 @@ func (rf *Raft) sendHeartbeat(server int, term int) {
 		rf.becomeFollowerLocked(reply.Term)
 		return
 	}
-
+	if reply.Success {
+		rf.updateLease()
+	}
 	// 更新日志匹配信息（如果有）
 	if reply.Success && len(args.Entries) > 0 {
 		rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
@@ -68,10 +70,6 @@ func (rf *Raft) heartbeatTicker(term int) {
 			rf.mu.Unlock()
 			return
 		}
-
-		now := time.Now()
-		rf.lastHeartbeatTime = now
-		rf.leaseExpiration = now.Add(rf.leaseDuration)
 
 		// 遍历所有 peer，发送心跳（除了自己）
 		for peer := 0; peer < len(rf.peers); peer++ {

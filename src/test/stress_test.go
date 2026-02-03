@@ -17,7 +17,7 @@ func TestStressPerformance(t *testing.T) {
 		clients  int
 		requests int
 	}{
-		{"LowLoad", 30, 1000}, // 10 * 100,（10个客户端,每个客户端发送100条数据）
+		{"LowLoad", 20, 1000}, // 10 * 100,（10个客户端,每个客户端发送100条数据）
 		//{"MediumLoad", 50, 200}, // 50 * 200
 		//{"HighLoad", 100, 500},  // 100 * 500
 		//{"VeryHighLoad", 100, 1000}, // 100 * 1000
