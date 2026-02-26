@@ -1,80 +1,245 @@
-# RaftKV - A Distributed Key-Value Store
+# README
 
-**A C+GO+GRPC project** implementing a distributed key-value database with:
-- **Storage Engine**: Implemented in C (high performance)
-- **Consensus Algorithm**: Raft implemented in Go (for distributed coordination)
+## 一、项目简介
 
-## Features
-- Basic CRUD operations
-- Raft consensus for data replication
-- Simple network interface
-- Educational design (easy to understand and modify)
+### 1.项目名称
 
-## Getting Started
+- JLDB - 一个自研的、高性能分布式键值存储系统
+- [Go: 1.19%2B](https://img.shields.io/badge/Go-1.19%2B-blue) [License: MIT](https://img.shields.io/badge/License-MIT-green) [Status: Active](https://img.shields.io/badge/Status-Active-brightgreen)
 
-### Prerequisites
-- Go 1.16+
-- GCC or Clang
-- Linux/MacOS (Windows may require adjustments)
+### 2.**核心价值**
 
-### Installation
-```bash
-git clone https://github.com/GDUT-CJL/Raft.git
-cd Raft/src/
+> JLDB 是一个基于 **Raft共识算法**、采用 **C/Go混合架构**、支持**多存储引擎**与**水平分片**的分布式KV数据库。它旨在为需要强一致性与高吞吐的场景（如物联网数据平台）提供底层存储支持，同时也是深入探索分布式系统原理的绝佳实践。
+
+### 3.核心特性速览
+
+- ✅ **强一致性**：基于Raft实现，支持线性一致读（ReadIndex）
+- 🚀 **高性能**：内存池、批量提交、Lease Read优化、多引擎对比
+- 📈 **可水平扩展**：多Raft组分片架构，吞吐与容量可线性增长
+- 🔧 **生产级特性**：二进制安全、快照压缩、容器化部署
+- 🧩 **灵活存储**：支持数组、红黑树、B树、跳表、哈希、RocksDB六种引擎
+
+## 二、架构总览
+
+### 1.系统架构图
+
+#### 1.1 整体分片架构图
+
+![1.drawio](.\drawio-files\1.drawio.png)
+
+#### 1.2 单节点架构图
+
+![raft单集群架构.drawio](.\drawio-files\raft单集群架构.drawio.png)
+
+### 2.设计哲学与技术选型
+
+- **为什么是Raft？** 易于理解与实现，具备完备的生产环境验证。
+- **为什么是C/Go混合？** C追求存储引擎极致性能，Go保证分布式模块开发效率与并发安全。
+- **为什么是多引擎？** 没有银弹，不同场景（点查/范围/写吞）需要不同数据结构。
+- **为什么是分片架构？** 突破单Raft组性能上限，走向真正可扩展。
+
+## 三、核心模块
+
+### 1.智能路由模块（**Lightweight PD**）
+
+- **组件**：Openresty(nginx + lua)
+- **职责**：
+  - **服务发现**：定期的探测各个分片的leader，维护路由表
+  - **请求路由**：对key进行hash，转发至目标分片Leader
+  - **高可用**：多实例 + KeepAlived VIP部署，避免单点故障
+
+### 2.分布式共识层（Multi-Raft Group）
+
+- **核心**：自研Raft算法实现（Go）
+- **关键特性**：
+  - 领导选举、日志复制、成员变更（单节点）
+  - 批量提交、Lease Read + ReadIndex优化，提高吞吐
+  - 日志快照（SnapShot）：防止日志无限增长
+- **关键代码指向**：/src/raft/目录下实现
+
+### 3.可插拔存储引擎
+
+- **C语言实现**：数组、红黑树、B树、跳表、哈希表
+- **集成引擎**：RocksDB（LSM-Tree代表）
+- **引擎选择**：客户端可通过指令指定，或根据负载模式自动建议。
+- **关键代码指向**：/src/brige/
+
+## 四、快速上手
+
+### 1.前置依赖
+
+```
+Go 1.19+, Docker, gcc,rocksdb,grpc,openresty,nginx
 ```
 
-### Build & Run
-
-1. First create a `config.json` (see Configuration section)
-2. Build the server:
+### 2.编译与运行单机模式
 
 ```bash
-go build main.go
+git clone https://github.com/GDUT-CJL/jl_kvstore.git
+cd Raft/src
+CGO_LDFLAGS="-lrocksdb" GOOS=linux GOARCH=amd64 go build -o kvstore main.go
+./kvstroe -id 0
 ```
 
-3. Run:
+## 五、基准测试与性能报告
+
+### 1.测试环境
 
 ```bash
-./main
+=== OS ===
+Description:	Ubuntu 18.04.4 LTS
+=== CPU ===
+型号名称：       Intel(R) Core(TM) i7-10510U CPU @ 1.80GHz
+=== MEM ===
+              总计         已用        空闲      共享    缓冲/缓存    可用
+内存：        3.8G        1.4G        815M         31M        1.6G        2.1G
+交换：        1.2G        780K        1.2G
+=== DISK ===
+文件系统        容量  已用  可用 已用% 挂载点
+/dev/sda1        59G   32G   25G   57% /
+=== IP ===
+    inet 192.168.79.158/24 brd 192.168.79.255 scope global dynamic noprefixroute ens33
+    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0
+    inet 172.18.0.1/16 brd 172.18.255.255 scope global docker_gwbridge
+=== VIRT ===
+vmware
 ```
 
-## Testing the Sysyem
+### 2.测试工具与方法
 
-### Using Telnet
+启动数据库，采用YCSB测试框架和自己实现的go语言的压测脚本，对数据库进行连接并进行压测。输出压测的数据
 
-```bash
-telnet 127.0.0.1 8000
-```
+### 3.关键性能数据
 
-Then send commands like:
+#### 3.1 C层存储引擎测试
 
-```bash
-SET key value
-GET key
-DEL key
-```
+| 数据结构 | 5W 耗时 (ms) | 5W QPS  | 10W 耗时 (ms) | 10W QPS |
+| -------- | ------------ | ------- | ------------- | ------- |
+| array    | 8654.000000  | 5777.68 | 26755.000000  | 3737.62 |
+| rbtree   | 29901.000000 | 1672.18 | 19469.000000  | 5136.37 |
+| hash     | 33617.000000 | 1487.34 | 28451.000000  | 3514.81 |
+| skiplist | 35988.000000 | 1389.35 | 42984.000000  | 2326.45 |
+| btree    | 35953.000000 | 1390.70 | 16294.000000  | 6137.23 |
+| rocksdb  | 45191.000000 | 1106.41 | 57828.000000  | 1729.27 |
 
-### Using NetWork Tools
+#### 3.2 单raft批量提交写性能测试
 
-You can also use any TCP client like:
+| 指标               | 单次提交 (每次1条日志) | 批量提交 (每批100条日志) |
+| ------------------ | :--------------------: | :----------------------: |
+| **测试类型**       |        压力测试        |         基准测试         |
+| **总客户端数**     |           20           |            20            |
+| **每客户端命令数** |         1,000          |          1,000           |
+| **总命令数**       |         20,000         |          20,000          |
+| **成功命令数**     |         20,000         |          20,000          |
+| **错误数**         |           0            |            0             |
+| **成功率**         |          100%          |           100%           |
+| **总耗时**         |       2分42.47秒       |          1.19秒          |
+| **吞吐量 (req/s)** |         123.10         |        16,763.32         |
+| **平均延迟**       |        161.63ms        |            -             |
+| **最小延迟**       |         9.48ms         |            -             |
+| **最大延迟**       |        526.95ms        |            -             |
+| **P95延迟**        |        298.75ms        |            -             |
+| **P99延迟**        |        360.51ms        |            -             |
+| **测试结果**       |         ✅ PASS         |          ✅ PASS          |
 
-- Netcat (`nc`)
-- Custom client applications
-- Network debugging assistants
+**批量提交 vs 单次提交 = 16,763.32 ÷ 123.10 ≈ 136倍提升**
 
-### Documentation
+⏱️ **延迟对比**
 
-Detailed documentation is available on the author's blog:
-[C_J_L12580's Blog]([不爱编程的小陈-CSDN博客](https://blog.csdn.net/C_J_L12580?spm=1000.2115.3001.5343)) *(Coming Soon)*
+- **单次提交**:
+  - 平均延迟: 161.63ms (较高)
+  - P99延迟: 360.51ms (严重拖尾)
+  - 最大延迟: 526.95ms (性能不稳定)
+- **批量提交**: 吞吐量极高延迟很低
 
-### Contributing
+🔍 **性能瓶颈分析**
 
-This is a learning project. Contributions are welcome through:
+单次提交的问题：
 
-- Issue reports
-- Pull requests
-- Documentation improvements
+1. **网络往返开销大**: 每条日志都需要一次完整的Raft协议流程
+2. **磁盘I/O频繁**: 每条日志立即持久化，I/O成为瓶颈
+3. **锁竞争严重**: 频繁的并发写入导致锁争用
+4. **CPU上下文切换**: 大量小任务导致调度开销
 
-## License
+批量提交的优势：
 
-[MIT License](https://license/) 
+1. **减少网络往返**: 100条日志一次提交，大幅降低通信开销
+2. **批量I/O优化**: 合并磁盘写入，提高I/O效率
+3. **减少锁竞争**: 批量处理降低并发冲突
+4. **更好的资源利用**: CPU和内存使用更高效
+
+#### 3.3 Lease Read算法读性能测试
+
+| 指标               | 直接读取Leader状态机 (leaseRead) | Raft一致性读 (每次走Raft协议) | 最终一致性读 (任意节点读取) |
+| ------------------ | :------------------------------: | :---------------------------: | :-------------------------: |
+| **总请求数**       |              10,000              |            10,000             |           10,000            |
+| **总耗时**         |             596.11ms             |            54.04s             |          629.24ms           |
+| **吞吐量 (req/s)** |            16,775.42             |            185.05             |          15,892.23          |
+| **平均延迟**       |             560.53μs             |            53.72ms            |          586.89μs           |
+| **最小延迟**       |             80.56μs              |            5.25ms             |           79.35μs           |
+| **最大延迟**       |             22.98ms              |           161.24ms            |           21.46ms           |
+| **P95延迟**        |              1.61ms              |            99.36ms            |           1.69ms            |
+| **P99延迟**        |              5.06ms              |           120.49ms            |           5.80ms            |
+| **错误数**         |                0                 |               0               |              0              |
+
+可以看出
+
+🚀 **吞吐量对比**
+
+- **直接读取Leader**: 16,775 req/s (最高性能)
+- **最终一致性读**: 15,892 req/s (性能接近最优)
+- **Raft一致性读**: 185 req/s (性能最低)
+
+⏱️ **延迟对比**
+
+- **直接读取Leader**: 平均 0.56ms (微秒级延迟)
+- **最终一致性读**: 平均 0.59ms (微秒级延迟)
+- **Raft一致性读**: 平均 53.7ms (毫秒级延迟)
+
+使用leaseRead算法，在本次测试的情况下与最终一致性的性能其实差不多，但是可靠性非常高。有待更多实验测试进行测试
+
+📊 **性能特点分析**
+
+| 读模式             | 优势                                   | 劣势                                    | 适用场景                         |
+| ------------------ | -------------------------------------- | --------------------------------------- | -------------------------------- |
+| **直接读取Leader** | • 最高吞吐量 • 最低延迟 • 强一致性保证 | • 依赖Leader节点 • Leader故障影响可用性 | 对性能要求极高的强一致性场景     |
+| **Raft一致性读**   | • 严格的线性一致性 • 无单点依赖        | • 性能最差 • 高延迟                     | 对一致性要求极严的场景           |
+| **最终一致性读**   | • 高性能 • 高可用 • 负载均衡           | • 弱一致性 • 可能读到旧数据             | 读多写少、可接受短暂不一致的场景 |
+
+#### 3.3 三分片（9节点）写性能测试
+
+| 是否分片 | 总请求数 | 总耗时(s) | Requests/sec (QPS) | Avg Latency(ms) | Min Latency(ms) | Max Latency(ms) | P95 Latency(ms) | P99 Latency(ms) | Errors |
+| -------- | -------- | --------- | ------------------ | --------------- | --------------- | --------------- | --------------- | --------------- | ------ |
+| 无分片   | 20000    | 166.522   | 120.10             | 165.92          | 16.96           | 515.53          | 301.89          | 356.16          | 0      |
+| 有分片   | 20000    | 56.745    | 352.45             | 55.41           | 1.65            | 311.63          | 130.99          | 181.74          | 0      |
+
+> 注：总耗时在无分片时为 `2m46.521889854s`→ 166.522 s；有分片时为 `56.745275367s`→ 56.745 s。
+>
+> Latency 保留两位小数为方便阅读，原始精度更高。
+
+- **分片显著提升性能**：
+  - QPS 从 120.10 提升到 352.45（约 **2.93 倍**）。
+  - 平均延迟从 165.92 ms 降到 55.41 ms（约 **降低 66%**）。
+  - P95、P99 延迟也大幅下降，说明尾部延迟改善明显。
+- **错误率**：两种情况下均为 0，说明功能正确性未受影响。
+- **最大延迟**：无分片时最高达 515 ms，有分片时最高 312 ms，分片对极端延迟也有抑制作用。
+
+## 六、技术文档与博客
+
+### 作者技术博客：
+
+[自研基于Raft的高性能分布式KV存储系统（二）-CSDN博客](https://blog.csdn.net/C_J_L12580/article/details/151224959?spm=1011.2415.3001.5331)
+
+[raft共识算法-CSDN博客](https://blog.csdn.net/C_J_L12580/article/details/146332409?spm=1011.2415.3001.5331)、[go语言实现raft —— PartA-CSDN博客](https://blog.csdn.net/C_J_L12580/article/details/146434318?spm=1011.2415.3001.5331)、[go语言实现raft —— PartB_go raft-CSDN博客](https://blog.csdn.net/C_J_L12580/article/details/146527340?spm=1011.2415.3001.5331)、[go语言实现raft —— PartC-CSDN博客](https://blog.csdn.net/C_J_L12580/article/details/146966974?spm=1011.2415.3001.5331)、[raft共识算法-CSDN博客](https://blog.csdn.net/C_J_L12580/article/details/146332409?spm=1011.2415.3001.5331)
+
+## 七、路线图与贡献
+
+### 1.未来计划
+
+- 动态数据再平衡（在线迁移）。
+- 简易分布式事务（2PC）原型。
+- SQL查询层预研。
+
+### 2.如何贡献
+
+## 八、许可证

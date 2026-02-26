@@ -566,9 +566,6 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				sendRESPResponse(safeWrite, "integer", "0")
 			}
 
-		// RBTree, BTree, Skiplist, Rocksdb等类似修改...
-		// 为了简洁，这里只展示Array和Hash的修改，其他需要按相同模式修改
-
 		// RBTree
 		case "RSET":
 			if len(parts) != 3 {
