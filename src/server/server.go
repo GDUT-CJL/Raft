@@ -360,9 +360,9 @@ func (kv *KVServer) applyToStateMachine(op raft.Op) *OpReply {
 		value = bridge.Skiplist_Count()
 
 	case RCSet:
-		err = bridge.RC_Set(op.Key, op.Value)
+		err = bridge.RC_Set(op.Key, op.Klen, op.Value, op.Vlen)
 	case RCDelete:
-		err = bridge.RC_Delete(op.Key)
+		err = bridge.RC_Delete(op.Key, op.Vlen)
 	case RCCount:
 		value = bridge.RC_Count()
 	default:

@@ -96,15 +96,14 @@ void close_Rocksdb() {
 }
 
 // 设置键值对
-int rc_set(const char* key, const char* value) {
+int rc_set(char* key,size_t klen, char* value,size_t vlen) {
     if (!rocksdb_obj || !key || !value) {
         fprintf(stderr, "Invalid parameters for kvs_rocksdb_set\n");
         return -1;
     }
     
     char* err = NULL;
-    rocksdb_put(rocksdb_obj->db, rocksdb_obj->writeoptions, key, strlen(key), value, strlen(value) + 1, &err);
-    
+    rocksdb_put(rocksdb_obj->db, rocksdb_obj->writeoptions, key, klen, value, vlen, &err);
     if (err) {
         fprintf(stderr, "Error in kvs_rocksdb_set: %s\n", err);
         rocksdb_free((void*)err);
@@ -115,34 +114,28 @@ int rc_set(const char* key, const char* value) {
 }
 
 // 获取键值对
-char* rc_get(const char* key) {
-    if (!rocksdb_obj || !key) {
-        fprintf(stderr, "Invalid parameters for kvs_rocksdb_get\n");
-        return NULL;
-    }
-    
-    size_t len;
+uint8_t* rc_get(const char* key, size_t klen, size_t* vallen) {
+    if (!rocksdb_obj || !key || !vallen) return NULL;
     char* err = NULL;
-    char *value = rocksdb_get(rocksdb_obj->db, rocksdb_obj->readoptions, key, strlen(key), &len, &err);
-    
+    char* value = rocksdb_get(rocksdb_obj->db, rocksdb_obj->readoptions,
+                              key, klen, vallen, &err);
     if (err) {
-        fprintf(stderr, "Error in kvs_rocksdb_get: %s\n", err);
-        rocksdb_free((void*)err);
+        fprintf(stderr, "Error: %s\n", err);
+        rocksdb_free(err);
         return NULL;
     }
-    
-    return value; // 调用者需要负责释放这个内存
+    return (uint8_t*)value;  // 转换为无符号字节指针
 }
 
 // 删除键值对
-int rc_delete(const char* key) {
+int rc_delete(const char* key,size_t klen) {
     if (!rocksdb_obj || !key) {
         fprintf(stderr, "Invalid parameters for kvs_rocksdb_delete\n");
         return -1;
     }
     
     char* err = NULL;
-    rocksdb_delete(rocksdb_obj->db, rocksdb_obj->writeoptions, key, strlen(key), &err);
+    rocksdb_delete(rocksdb_obj->db, rocksdb_obj->writeoptions, key, klen, &err);
     
     if (err) {
         fprintf(stderr, "Error in kvs_rocksdb_delete: %s\n", err);
@@ -151,6 +144,67 @@ int rc_delete(const char* key) {
     }
     
     return 0;
+}
+
+// 判断是否存在key
+int rc_exist(const char* key, size_t klen) {
+    if (!rocksdb_obj || !key) {
+        fprintf(stderr, "Invalid parameters for rc_exist_may\n");
+        return -1;  // 参数错误
+    }
+
+    // 准备用于 rocksdb_key_may_exist 的输出参数
+    char* value = NULL;
+    size_t vallen = 0;
+    unsigned char value_found = 0;
+    char* err = NULL;
+
+    // 快速存在性检查
+    unsigned char may = rocksdb_key_may_exist(
+        rocksdb_obj->db,
+        rocksdb_obj->readoptions,
+        key, klen,
+        &value, &vallen,
+        NULL,0,
+        &value_found
+    );
+
+    if (may == 0) {
+        // 一定不存在
+        return 1;   // 返回 1 表示不存在（可根据需要调整）
+    } else if (may == 1 && value_found) {
+        // 一定存在，且 value 已被填充，需要释放
+        rocksdb_free(value);
+        return 0;   // 存在
+    } else {
+        // may == 2 或 may == 1 但 value_found == 0，需要进一步确认
+        // 这里重新用 rocksdb_get 确认
+        if (value) {
+            // 如果 may==1 但 value_found==0，value 可能仍被分配，应释放
+            rocksdb_free(value);
+            value = NULL;
+        }
+
+        char* real_value = rocksdb_get(
+            rocksdb_obj->db,
+            rocksdb_obj->readoptions,
+            key, klen,
+            &vallen, &err
+        );
+
+        if (err) {
+            fprintf(stderr, "RocksDB error in rocksdb_get: %s\n", err);
+            rocksdb_free(err);
+            return -1;  // 错误
+        }
+
+        if (real_value == NULL) {
+            return 1;   // 不存在
+        } else {
+            rocksdb_free(real_value);
+            return 0;   // 存在
+        }
+    }
 }
 
 // 创建备份

@@ -386,12 +386,14 @@ func Skiplist_Exist(key string, klen int) int {
 
 // ---------------------------- Rocksdb ------------------------------------- //
 var rocksdbCounter int64 // 原子计数器
-func RC_Set(key, value string) string {
+func RC_Set(key string, klen int, value string, vlen int) string {
 	cKey := C.CString(key)
 	cValue := C.CString(value)
-	defer C.kvs_free(unsafe.Pointer(cKey))
-	defer C.kvs_free(unsafe.Pointer(cValue))
-	ret := C.rc_set(cKey, cValue)
+	cKlen := C.size_t(klen)
+	cVlen := C.size_t(vlen)
+	defer C.free(unsafe.Pointer(cKey))
+	defer C.free(unsafe.Pointer(cValue))
+	ret := C.rc_set(cKey, cKlen, cValue, cVlen)
 	if ret == 0 {
 		atomic.AddInt64(&rocksdbCounter, 1)
 		return "OK"
@@ -399,18 +401,24 @@ func RC_Set(key, value string) string {
 	return "FALIED"
 }
 
-func RC_Get(key string) string {
+func RC_Get(key string, klen int) string {
 	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey))
-	cValue := C.rc_get(cKey)
-	return C.GoString(cValue)
+	defer C.free(unsafe.Pointer(cKey))
+	var cVlen C.size_t
+	cValue := C.rc_get(cKey, C.size_t(klen), &cVlen)
+	if cValue == nil || cVlen == 0 {
+		return "" // 或返回错误
+	}
+	goBytes := C.GoBytes(unsafe.Pointer(cValue), C.int(cVlen))
+	return BinaryToPrintable(goBytes)
 }
 
-func RC_Delete(key string) string {
+func RC_Delete(key string, klen int) string {
 	cKey := C.CString(key)
-	defer C.kvs_free(unsafe.Pointer(cKey))
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey))
 
-	cRet := C.rc_delete(cKey)
+	cRet := C.rc_delete(cKey, cKlen)
 	if cRet == 0 {
 		atomic.AddInt64(&rocksdbCounter, -1)
 		return "OK"
@@ -420,4 +428,11 @@ func RC_Delete(key string) string {
 
 func RC_Count() int {
 	return int(atomic.LoadInt64(&rocksdbCounter))
+}
+func RC_Exist(key string, klen int) int {
+	cKey := C.CString(key)
+	cKlen := C.size_t(klen)
+	defer C.free(unsafe.Pointer(cKey)) // 释放 C 字符串
+	ret := C.rc_exist(cKey, cKlen)
+	return int(ret)
 }

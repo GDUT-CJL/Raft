@@ -353,7 +353,8 @@ func sendRESPResponse(safeWrite func([]byte), respType string, data string) {
 		if data == "" {
 			safeWrite([]byte("$-1\r\n")) // Redis nil
 		} else {
-			safeWrite([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(data), data)))
+			// len(data)-1代表去除结尾的空字符
+			safeWrite([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(data)-1, data)))
 		}
 	case "error":
 		safeWrite([]byte(fmt.Sprintf("-%s\r\n", data)))
@@ -721,7 +722,6 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				continue
 			}
 			Commited(server.RCSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, timer, safeWrite)
-
 		case "RCGET":
 			if len(parts) != 2 {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hget' command")
@@ -729,7 +729,7 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 			}
 			if ok := checkLeaseRead(rf, safeWrite); ok {
 				// 直接读取本地状态机（线性一致，因为 Lease 保证了 Leader 未变更）
-				value := bridge.RC_Get(parts[1])
+				value := bridge.RC_Get(parts[1], len(parts[1]))
 				sendRESPResponse(safeWrite, "bulk", value)
 			}
 
@@ -750,6 +750,18 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				continue
 			}
 			Commited(server.RCDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, timer, safeWrite)
+
+		case "RCEXIST":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hexist' command")
+				continue
+			}
+			ret := bridge.RC_Exist(parts[1], len(parts[1]))
+			if ret == 0 {
+				sendRESPResponse(safeWrite, "integer", "1")
+			} else {
+				sendRESPResponse(safeWrite, "integer", "0")
+			}
 		case "LEADER":
 			if len(parts) != 1 {
 				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hget' command")

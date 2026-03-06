@@ -213,11 +213,13 @@ int init_rocksdb();
 // 关闭并清理 RocksDB 资源
 void close_Rocksdb();
 // 设置键值对
-int rc_set(const char* key, const char* value);
+int rc_set(char* key,size_t klen, char* value,size_t vlen);
 // 获取键值对
-char* rc_get(const char* key);
+uint8_t* rc_get(const char* key, size_t klen, size_t* vallen);
 // 删除键值对
-int rc_delete(const char* key);
+int rc_delete(const char* key,size_t klen);
+// 判断key是否存在
+int rc_exist(const char* key, size_t klen);
 // 创建备份
 int kvs_rocksdb_create_backup() ;
 // 批量写入接口
