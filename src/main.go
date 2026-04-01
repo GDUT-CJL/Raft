@@ -22,33 +22,46 @@ type Node struct {
 }
 
 // 启动单个节点
-func startNode(cfg config.NodeConfig, clusterConfigs []config.NodeConfig, nodeId int, batchConfig config.BatchConfig) (*Node, error) {
+func startNode(cfg config.NodeConfig, clusterConfigs []config.NodeConfig, nodeId int, batchConfig config.BatchConfig, useOptimized bool) (*Node, error) {
 	// 准备RPC地址列表
 	rpcAddrs := make([]string, len(clusterConfigs))
 	for i, nodeCfg := range clusterConfigs {
 		rpcAddrs[i] = nodeCfg.RPCAddr
 	}
 
-	// 初始化批量管理器
-	// var batchSize int
-	// var batchTimeout time.Duration
-	// if batchConfig.BatchSize > 0 {
-	// 	batchSize = batchConfig.BatchSize
-	// 	// 这里给一个很大的值表示不使用这个功能
-	// 	batchTimeout = 10000000000000
-	// } else {
-	// 	batchSize = 1
-	// 	batchTimeout = batchConfig.BatchTimeout
-	// }
-	mnet.InitBatchManager(batchConfig.BatchSize, batchConfig.BatchTimeout)
-	fmt.Printf("Batch configuration - Size: %d, Timeout: %v\n",
-		batchConfig.BatchSize, batchConfig.BatchTimeout)
-
 	var kv *server.KVServer
 	if cfg.ID == nodeId {
 		fmt.Printf("nodeId: %d, cfg.ID = %d\n", nodeId, cfg.ID)
+
+		// 先设置使用优化版本标识，再启动KVServer
+		if useOptimized {
+			config.SetUseOptimizedVersion(true)
+		} else {
+			config.SetUseOptimizedVersion(false)
+		}
+
 		// 启动rpc服务
 		kv = server.StartKVServer(rpcAddrs, cfg.ID, -1)
+
+		// 初始化批量管理器
+		if useOptimized {
+			// 使用优化后的批量管理器
+			obm := mnet.NewOptimizedBatchManager(
+				kv,
+				kv.GetRaft(),
+				batchConfig.BatchSize,
+				batchConfig.BatchTimeout,
+			)
+			mnet.SetOptimizedBatchManager(obm)
+			fmt.Printf("Optimized Batch Manager initialized - Size: %d, Timeout: %v\n",
+				batchConfig.BatchSize, batchConfig.BatchTimeout)
+		} else {
+			// 使用原有的批量管理器
+			mnet.InitBatchManager(batchConfig.BatchSize, batchConfig.BatchTimeout)
+			fmt.Printf("Legacy Batch Manager initialized - Size: %d, Timeout: %v\n",
+				batchConfig.BatchSize, batchConfig.BatchTimeout)
+		}
+
 		// 启动客户端监听服务
 		go mnet.StartTCPServer(kv, cfg.ClientAddr, cfg.ID)
 	}
@@ -65,6 +78,7 @@ func main() {
 	bridge.InitMemPool()
 	configPath := flag.String("config", "config/config.json", "Path to cluster configuration file")
 	configId := flag.Int("id", 0, "node id")
+	useOptimized := flag.Bool("optimized", false, "Use optimized batch manager")
 	flag.Parse()
 
 	// 读取配置文件
@@ -80,7 +94,7 @@ func main() {
 	// 创建节点
 	nodes := make([]*Node, len(globalConfig.Nodes))
 	for i, cfg := range globalConfig.Nodes {
-		node, err := startNode(cfg, globalConfig.Nodes, *configId, globalConfig.Batch)
+		node, err := startNode(cfg, globalConfig.Nodes, *configId, globalConfig.Batch, *useOptimized)
 		if err != nil {
 			fmt.Printf("Failed to start node %d: %v\n", cfg.ID, err)
 			os.Exit(1)
@@ -90,6 +104,23 @@ func main() {
 			cfg.ID, cfg.RPCAddr, cfg.ClientAddr)
 	}
 
+	// 如果使用优化版本，启动监控
+	if *useOptimized && nodes[0] != nil && nodes[0].kvServer != nil {
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+
+			for range ticker.C {
+				obm := mnet.GetOptimizedBatchManager()
+				if obm != nil {
+					batchSize, avgLatency, throughput := obm.GetStats()
+					fmt.Printf("[Stats] BatchSize=%d, AvgLatency=%dms, Throughput=%d ops\n",
+						batchSize, avgLatency, throughput)
+				}
+			}
+		}()
+	}
+
 	// 等待中断信号
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -97,5 +128,14 @@ func main() {
 
 	// 优雅关闭
 	fmt.Println("\nShutting down cluster...")
+
+	// 停止优化后的BatchManager
+	if *useOptimized {
+		obm := mnet.GetOptimizedBatchManager()
+		if obm != nil {
+			obm.Stop()
+		}
+	}
+
 	time.Sleep(1 * time.Second)
 }

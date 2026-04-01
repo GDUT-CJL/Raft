@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"course/bridge"
+	"course/config"
 	"course/raft"
 	"course/server"
 	"fmt"
@@ -175,6 +176,19 @@ var opPool = sync.Pool{
 
 // 修改Commited函数，统一返回响应
 func Commited(optype raft.OperationType, key string, klen int, value string, vlen int, conn net.Conn, kv *server.KVServer,
+	rf *raft.Raft, timer *time.Timer, safeWrite func([]byte)) {
+
+	// 根据配置选择使用优化版本还是原版本
+	if config.IsUseOptimizedVersion() {
+		CommitedOptimized(optype, key, klen, value, vlen, conn, kv, rf, safeWrite)
+		return
+	}
+
+	// 以下是原版本实现
+	commitedLegacy(optype, key, klen, value, vlen, conn, kv, rf, timer, safeWrite)
+}
+
+func commitedLegacy(optype raft.OperationType, key string, klen int, value string, vlen int, conn net.Conn, kv *server.KVServer,
 	rf *raft.Raft, timer *time.Timer, safeWrite func([]byte)) {
 
 	// 检查是否是leader
@@ -389,6 +403,17 @@ func checkLeaseRead(rf *raft.Raft, safeWrite func([]byte)) bool {
 
 // handleConnection 使用批量管理器
 func handleConnection(kv *server.KVServer, conn net.Conn) {
+	// 根据配置选择使用哪个版本
+	if config.IsUseOptimizedVersion() {
+		handleConnectionOptimized(kv, conn)
+		return
+	}
+
+	// 以下是原版本实现
+	handleConnectionLegacy(kv, conn)
+}
+
+func handleConnectionLegacy(kv *server.KVServer, conn net.Conn) {
 	// 为每个连接创建专用的写入锁
 	var writeMutex sync.Mutex
 	writer := bufio.NewWriterSize(conn, 64*1024) // 使用带缓冲的writer
@@ -768,6 +793,334 @@ func handleConnection(kv *server.KVServer, conn net.Conn) {
 				continue
 			}
 			sendRESPResponse(safeWrite, "bulk", rf.LeaderIP)
+		default:
+			sendRESPResponse(safeWrite, "error", fmt.Sprintf("ERR unknown command '%s'", action))
+		}
+	}
+}
+
+func handleConnectionOptimized(kv *server.KVServer, conn net.Conn) {
+	var writeMutex sync.Mutex
+	writer := bufio.NewWriterSize(conn, 64*1024)
+
+	safeWrite := func(data []byte) {
+		writeMutex.Lock()
+		defer writeMutex.Unlock()
+		writer.Write(data)
+		writer.Flush()
+	}
+
+	rf := kv.GetRaft()
+	reader := bufio.NewReaderSize(conn, 128*1024)
+
+	for {
+		parts, err := parseRESP(reader)
+		var action string
+
+		if err != nil {
+			if err == io.EOF {
+				conn.Close()
+				break
+			}
+			if reader.Buffered() > 0 {
+				reader.Discard(reader.Buffered())
+			}
+
+			fmt.Printf("RESP parse error: %v\n", err)
+			sendRESPResponse(safeWrite, "error", "ERR invalid RESP format")
+			continue
+		} else {
+			if len(parts) < 1 {
+				sendRESPResponse(safeWrite, "error", "Invalid command")
+				continue
+			}
+			action = strings.ToUpper(parts[0])
+		}
+
+		switch action {
+		case "SET":
+			if len(parts) != 3 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'set' command")
+				continue
+			}
+			Commited(server.Set, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, nil, safeWrite)
+
+		case "GET":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'get' command")
+				continue
+			}
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				value := bridge.Array_Get(parts[1], len(parts[1]))
+				sendRESPResponse(safeWrite, "bulk", value)
+			}
+
+		case "COUNT":
+			if len(parts) != 1 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'count' command")
+				continue
+			}
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				value := bridge.Array_Count()
+				sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			}
+
+		case "DELETE":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'delete' command")
+				continue
+			}
+			Commited(server.Delete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, nil, safeWrite)
+
+		case "EXIST":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'exist' command")
+				continue
+			}
+			ret := bridge.Array_Exist(parts[1], len(parts[1]))
+			if ret == 0 {
+				sendRESPResponse(safeWrite, "integer", "1")
+			} else {
+				sendRESPResponse(safeWrite, "integer", "0")
+			}
+
+		case "HSET":
+			if len(parts) != 3 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hset' command")
+				continue
+			}
+			Commited(server.HSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, nil, safeWrite)
+
+		case "HGET":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hget' command")
+				continue
+			}
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				value := bridge.Hash_Get(parts[1], len(parts[1]))
+				sendRESPResponse(safeWrite, "bulk", value)
+			}
+
+		case "HCOUNT":
+			if len(parts) != 1 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hcount' command")
+				continue
+			}
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				value := bridge.Hash_Count()
+				sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			}
+
+		case "HDELETE":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hdelete' command")
+				continue
+			}
+			Commited(server.HDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, nil, safeWrite)
+
+		case "HEXIST":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'hexist' command")
+				continue
+			}
+			ret := bridge.Hash_Exist(parts[1], len(parts[1]))
+			if ret == 0 {
+				sendRESPResponse(safeWrite, "integer", "1")
+			} else {
+				sendRESPResponse(safeWrite, "integer", "0")
+			}
+
+		case "RSET":
+			if len(parts) != 3 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'rset' command")
+				continue
+			}
+			Commited(server.RSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, nil, safeWrite)
+
+		case "RGET":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'rget' command")
+				continue
+			}
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				value := bridge.RB_Get(parts[1], len(parts[1]))
+				sendRESPResponse(safeWrite, "bulk", value)
+			}
+
+		case "RCOUNT":
+			if len(parts) != 1 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'rcount' command")
+				continue
+			}
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				value := bridge.RB_Count()
+				sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			}
+
+		case "RDELETE":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'rdelete' command")
+				continue
+			}
+			Commited(server.RDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, nil, safeWrite)
+
+		case "REXIST":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'rexist' command")
+				continue
+			}
+			ret := bridge.RB_Exist(parts[1], len(parts[1]))
+			if ret == 0 {
+				sendRESPResponse(safeWrite, "integer", "1")
+			} else {
+				sendRESPResponse(safeWrite, "integer", "0")
+			}
+
+		case "BSET":
+			if len(parts) != 3 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'bset' command")
+				continue
+			}
+			Commited(server.BSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, nil, safeWrite)
+
+		case "BGET":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'bget' command")
+				continue
+			}
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				value := bridge.BTree_Get(parts[1], len(parts[1]))
+				sendRESPResponse(safeWrite, "bulk", value)
+			}
+
+		case "BCOUNT":
+			if len(parts) != 1 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'bcount' command")
+				continue
+			}
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				value := bridge.BTree_Count()
+				sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			}
+
+		case "BDELETE":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'bdelete' command")
+				continue
+			}
+			Commited(server.BDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, nil, safeWrite)
+
+		case "BEXIST":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'bexist' command")
+				continue
+			}
+			ret := bridge.BTree_Exist(parts[1], len(parts[1]))
+			if ret == 0 {
+				sendRESPResponse(safeWrite, "integer", "1")
+			} else {
+				sendRESPResponse(safeWrite, "integer", "0")
+			}
+
+		case "ZSET":
+			if len(parts) != 3 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'zset' command")
+				continue
+			}
+			Commited(server.ZSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, nil, safeWrite)
+
+		case "ZGET":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'zget' command")
+				continue
+			}
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				value := bridge.Skiplist_Get(parts[1], len(parts[1]))
+				sendRESPResponse(safeWrite, "bulk", value)
+			}
+
+		case "ZCOUNT":
+			if len(parts) != 1 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'zcount' command")
+				continue
+			}
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				value := bridge.Skiplist_Count()
+				sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			}
+
+		case "ZDELETE":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'zdelete' command")
+				continue
+			}
+			Commited(server.ZDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, nil, safeWrite)
+
+		case "ZEXIST":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'zexist' command")
+				continue
+			}
+			ret := bridge.Skiplist_Exist(parts[1], len(parts[1]))
+			if ret == 0 {
+				sendRESPResponse(safeWrite, "integer", "1")
+			} else {
+				sendRESPResponse(safeWrite, "integer", "0")
+			}
+
+		case "RCSET":
+			if len(parts) != 3 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'rcset' command")
+				continue
+			}
+			Commited(server.RCSet, parts[1], len(parts[1]), parts[2], len(parts[2]), conn, kv, rf, nil, safeWrite)
+
+		case "RCGET":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'rcget' command")
+				continue
+			}
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				value := bridge.RC_Get(parts[1], len(parts[1]))
+				sendRESPResponse(safeWrite, "bulk", value)
+			}
+
+		case "RCCOUNT":
+			if len(parts) != 1 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'rccount' command")
+				continue
+			}
+			if ok := checkLeaseRead(rf, safeWrite); ok {
+				value := bridge.RC_Count()
+				sendRESPResponse(safeWrite, "integer", strconv.Itoa(value))
+			}
+
+		case "RCDELETE":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'rcdelete' command")
+				continue
+			}
+			Commited(server.RCDelete, parts[1], len(parts[1]), parts[1], len(parts[1]), conn, kv, rf, nil, safeWrite)
+
+		case "RCEXIST":
+			if len(parts) != 2 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'rcexist' command")
+				continue
+			}
+			ret := bridge.RC_Exist(parts[1], len(parts[1]))
+			if ret == 0 {
+				sendRESPResponse(safeWrite, "integer", "1")
+			} else {
+				sendRESPResponse(safeWrite, "integer", "0")
+			}
+
+		case "LEADER":
+			if len(parts) != 1 {
+				sendRESPResponse(safeWrite, "error", "ERR wrong number of arguments for 'leader' command")
+				continue
+			}
+			sendRESPResponse(safeWrite, "bulk", rf.LeaderIP)
+
 		default:
 			sendRESPResponse(safeWrite, "error", fmt.Sprintf("ERR unknown command '%s'", action))
 		}

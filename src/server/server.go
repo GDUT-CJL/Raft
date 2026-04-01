@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"course/bridge"
+	"course/config"
 	"course/labgob"
 	"course/raft"
 	"fmt"
@@ -99,7 +100,12 @@ func StartKVServer(servers []string, me int, maxraftstate int) *KVServer {
 	// 启动快照制作协程
 	go kv.snapshotWorker()
 
-	go kv.applyTask()
+	// 根据配置选择使用哪个applyTask
+	if config.IsUseOptimizedVersion() {
+		go kv.applyTaskOptimized()
+	} else {
+		go kv.applyTask()
+	}
 	return kv
 }
 
