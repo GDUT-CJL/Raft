@@ -4,6 +4,7 @@ import (
 	"course/raft"
 	"course/server"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -11,8 +12,11 @@ import (
 )
 
 var (
-	globalOptimizedBatchManager *OptimizedBatchManager
-	obmMutex                    sync.RWMutex
+	globalBatchManager *BatchManager
+	bmMutex            sync.RWMutex
+
+	clientIDCounter int64
+	seqIDCounter    int64
 )
 
 type BatchRequest struct {
@@ -28,7 +32,7 @@ type BatchResponse struct {
 	Value   string
 }
 
-type OptimizedBatchManager struct {
+type BatchManager struct {
 	requestQueue  chan *BatchRequest
 	batchSize     int32
 	batchTimeout  time.Duration
@@ -44,20 +48,20 @@ type OptimizedBatchManager struct {
 	lastBatchTime time.Time
 }
 
-func SetOptimizedBatchManager(obm *OptimizedBatchManager) {
-	obmMutex.Lock()
-	defer obmMutex.Unlock()
-	globalOptimizedBatchManager = obm
+func SetBatchManager(bm *BatchManager) {
+	bmMutex.Lock()
+	defer bmMutex.Unlock()
+	globalBatchManager = bm
 }
 
-func GetOptimizedBatchManager() *OptimizedBatchManager {
-	obmMutex.RLock()
-	defer obmMutex.RUnlock()
-	return globalOptimizedBatchManager
+func GetBatchManager() *BatchManager {
+	bmMutex.RLock()
+	defer bmMutex.RUnlock()
+	return globalBatchManager
 }
 
-func NewOptimizedBatchManager(kv *server.KVServer, rf *raft.Raft, initialBatchSize int, batchTimeout time.Duration) *OptimizedBatchManager {
-	obm := &OptimizedBatchManager{
+func NewBatchManager(kv *server.KVServer, rf *raft.Raft, initialBatchSize int, batchTimeout time.Duration) *BatchManager {
+	bm := &BatchManager{
 		requestQueue:  make(chan *BatchRequest, 10000),
 		batchSize:     int32(initialBatchSize),
 		batchTimeout:  batchTimeout,
@@ -69,13 +73,14 @@ func NewOptimizedBatchManager(kv *server.KVServer, rf *raft.Raft, initialBatchSi
 		lastBatchTime: time.Now(),
 	}
 
-	obm.wg.Add(1)
-	go obm.batchWorker()
+	bm.wg.Add(1)
+	go bm.batchWorker()
 
-	return obm
+	return bm
 }
 
-func (obm *OptimizedBatchManager) Submit(op raft.Op, conn net.Conn) *BatchResponse {
+// 往全局队列中放入请求数据
+func (bm *BatchManager) Submit(op raft.Op, conn net.Conn) *BatchResponse {
 	respCh := make(chan *BatchResponse, 1)
 
 	req := &BatchRequest{
@@ -86,8 +91,8 @@ func (obm *OptimizedBatchManager) Submit(op raft.Op, conn net.Conn) *BatchRespon
 	}
 
 	select {
-	case obm.requestQueue <- req:
-		atomic.AddInt64(&obm.pendingOps, 1)
+	case bm.requestQueue <- req:
+		atomic.AddInt64(&bm.pendingOps, 1)
 		return <-respCh
 	default:
 		return &BatchResponse{
@@ -97,50 +102,50 @@ func (obm *OptimizedBatchManager) Submit(op raft.Op, conn net.Conn) *BatchRespon
 	}
 }
 
-func (obm *OptimizedBatchManager) batchWorker() {
-	defer obm.wg.Done()
+func (bm *BatchManager) batchWorker() {
+	defer bm.wg.Done()
 
-	batch := make([]*BatchRequest, 0, obm.maxBatchSize)
-	timer := time.NewTimer(obm.batchTimeout)
+	batch := make([]*BatchRequest, 0, bm.maxBatchSize)
+	timer := time.NewTimer(bm.batchTimeout)
 	defer timer.Stop()
 
 	for {
 		select {
-		case <-obm.stopCh:
+		case <-bm.stopCh:
 			if len(batch) > 0 {
-				obm.processBatch(batch)
+				bm.processBatch(batch)
 			}
 			return
 
-		case req := <-obm.requestQueue:
+		case req := <-bm.requestQueue:
 			batch = append(batch, req)
-			atomic.AddInt64(&obm.pendingOps, -1)
+			atomic.AddInt64(&bm.pendingOps, -1)
 
-			if len(batch) >= int(atomic.LoadInt32(&obm.batchSize)) {
-				obm.processBatch(batch)
-				batch = make([]*BatchRequest, 0, obm.maxBatchSize)
-				obm.adjustBatchSize()
+			if len(batch) >= int(atomic.LoadInt32(&bm.batchSize)) {
+				bm.processBatch(batch)
+				batch = make([]*BatchRequest, 0, bm.maxBatchSize)
+				bm.adjustBatchSize()
 				if !timer.Stop() {
 					select {
 					case <-timer.C:
 					default:
 					}
 				}
-				timer.Reset(obm.batchTimeout)
+				timer.Reset(bm.batchTimeout)
 			}
 
 		case <-timer.C:
 			if len(batch) > 0 {
-				obm.processBatch(batch)
-				batch = make([]*BatchRequest, 0, obm.maxBatchSize)
-				obm.adjustBatchSize()
+				bm.processBatch(batch)
+				batch = make([]*BatchRequest, 0, bm.maxBatchSize)
+				bm.adjustBatchSize()
 			}
-			timer.Reset(obm.batchTimeout)
+			timer.Reset(bm.batchTimeout)
 		}
 	}
 }
 
-func (obm *OptimizedBatchManager) processBatch(batch []*BatchRequest) {
+func (bm *BatchManager) processBatch(batch []*BatchRequest) {
 	if len(batch) == 0 {
 		return
 	}
@@ -152,7 +157,7 @@ func (obm *OptimizedBatchManager) processBatch(batch []*BatchRequest) {
 		ops[i] = req.Op
 	}
 
-	index, _, isLeader := obm.rf.Start(ops)
+	index, _, isLeader := bm.rf.Start(ops)
 	if !isLeader {
 		for _, req := range batch {
 			req.RespCh <- &BatchResponse{
@@ -163,7 +168,7 @@ func (obm *OptimizedBatchManager) processBatch(batch []*BatchRequest) {
 		return
 	}
 
-	notifyCh := obm.kv.GetNotifyChannel(index)
+	notifyCh := bm.kv.GetNotifyChannel(index)
 
 	select {
 	case replies := <-notifyCh:
@@ -191,43 +196,43 @@ func (obm *OptimizedBatchManager) processBatch(batch []*BatchRequest) {
 		}
 	}
 
-	obm.kv.RemoveNotifyChannel(index)
+	bm.kv.RemoveNotifyChannel(index)
 
 	latency := time.Since(startTime).Milliseconds()
-	atomic.StoreInt64(&obm.avgLatency, latency)
-	atomic.AddInt64(&obm.throughput, int64(len(batch)))
-	obm.lastBatchTime = time.Now()
+	atomic.StoreInt64(&bm.avgLatency, latency)
+	atomic.AddInt64(&bm.throughput, int64(len(batch)))
+	bm.lastBatchTime = time.Now()
 }
 
-func (obm *OptimizedBatchManager) adjustBatchSize() {
-	latency := atomic.LoadInt64(&obm.avgLatency)
-	currentSize := atomic.LoadInt32(&obm.batchSize)
+func (bm *BatchManager) adjustBatchSize() {
+	latency := atomic.LoadInt64(&bm.avgLatency)
+	currentSize := atomic.LoadInt32(&bm.batchSize)
 
 	if latency > 100 {
 		newSize := currentSize * 9 / 10
-		if newSize >= obm.minBatchSize {
-			atomic.StoreInt32(&obm.batchSize, newSize)
+		if newSize >= bm.minBatchSize {
+			atomic.StoreInt32(&bm.batchSize, newSize)
 		}
 	} else if latency < 50 {
 		newSize := currentSize * 11 / 10
-		if newSize <= obm.maxBatchSize {
-			atomic.StoreInt32(&obm.batchSize, newSize)
+		if newSize <= bm.maxBatchSize {
+			atomic.StoreInt32(&bm.batchSize, newSize)
 		}
 	}
 }
 
-func (obm *OptimizedBatchManager) GetStats() (int32, int64, int64) {
-	return atomic.LoadInt32(&obm.batchSize),
-		atomic.LoadInt64(&obm.avgLatency),
-		atomic.LoadInt64(&obm.throughput)
+func (bm *BatchManager) GetStats() (int32, int64, int64) {
+	return atomic.LoadInt32(&bm.batchSize),
+		atomic.LoadInt64(&bm.avgLatency),
+		atomic.LoadInt64(&bm.throughput)
 }
 
-func (obm *OptimizedBatchManager) Stop() {
-	close(obm.stopCh)
-	obm.wg.Wait()
+func (bm *BatchManager) Stop() {
+	close(bm.stopCh)
+	bm.wg.Wait()
 }
 
-func CommitedOptimized(optype raft.OperationType, key string, klen int, value string, vlen int, conn net.Conn, kv *server.KVServer,
+func CommitedBatch(optype raft.OperationType, key string, klen int, value string, vlen int, conn net.Conn, kv *server.KVServer,
 	rf *raft.Raft, safeWrite func([]byte)) {
 
 	if _, isLeader := rf.GetState(); !isLeader {
@@ -235,9 +240,9 @@ func CommitedOptimized(optype raft.OperationType, key string, klen int, value st
 		return
 	}
 
-	obm := GetOptimizedBatchManager()
-	if obm == nil {
-		safeWrite([]byte("-ERR Optimized batch manager not initialized\r\n"))
+	bm := GetBatchManager()
+	if bm == nil {
+		safeWrite([]byte("-ERR Batch manager not initialized\r\n"))
 		return
 	}
 
@@ -251,11 +256,28 @@ func CommitedOptimized(optype raft.OperationType, key string, klen int, value st
 		SeqId:    generateSeqID(),
 	}
 
-	response := obm.Submit(op, conn)
+	response := bm.Submit(op, conn)
 
 	if response.Success {
 		safeWrite([]byte("+OK\r\n"))
 	} else {
 		safeWrite([]byte(fmt.Sprintf("-ERR %s\r\n", response.Error)))
 	}
+}
+
+func generateSeqID() int64 {
+	now := time.Now().UnixNano() / 1e6
+	seq := atomic.AddInt64(&seqIDCounter, 1) & 0xFFF
+	return (now << 12) | seq
+}
+
+func generateClientID(conn net.Conn) int64 {
+	addr := conn.RemoteAddr().(*net.TCPAddr).IP.String()
+	hash := fnv.New64a()
+	hash.Write([]byte(addr))
+
+	now := time.Now().UnixNano() / 1e6
+	clientSeq := atomic.AddInt64(&clientIDCounter, 1) & 0xFFFF
+
+	return now ^ (int64(hash.Sum64()) & 0xFFFF) ^ (clientSeq << 32)
 }

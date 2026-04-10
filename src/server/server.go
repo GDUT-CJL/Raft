@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"course/bridge"
-	"course/config"
 	"course/labgob"
 	"course/raft"
 	"fmt"
@@ -100,12 +99,8 @@ func StartKVServer(servers []string, me int, maxraftstate int) *KVServer {
 	// 启动快照制作协程
 	go kv.snapshotWorker()
 
-	// 根据配置选择使用哪个applyTask
-	if config.IsUseOptimizedVersion() {
-		go kv.applyTaskOptimized()
-	} else {
-		go kv.applyTask()
-	}
+	// 启动应用任务协程
+	go kv.applyTask()
 	return kv
 }
 
@@ -137,16 +132,13 @@ func (kv *KVServer) snapshotWorker() {
 	}
 }
 
-// 异步制作快照
 func (kv *KVServer) makeSnapshotAsync(index int, clientSeqTable map[int64]LastOperationInfo) {
-	// 获取C层状态机的快照
 	stateMachineSnapshot := bridge.Storage_Snapshot()
 	if stateMachineSnapshot == nil {
 		fmt.Printf("KVServer[%d] failed to create storage snapshot\n", kv.me)
 		return
 	}
 
-	// 编码去重表和状态机快照
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 
@@ -159,11 +151,11 @@ func (kv *KVServer) makeSnapshotAsync(index int, clientSeqTable map[int64]LastOp
 		return
 	}
 
-	// 调用Raft层快照
 	snapshot := w.Bytes()
 	kv.rf.Snapshot(index, snapshot)
 }
 
+// 异步制作快照
 // 从快照恢复
 func (kv *KVServer) restoreFromSnapshot(snapshot []byte) {
 	if len(snapshot) == 0 {
@@ -208,11 +200,11 @@ func (kv *KVServer) printResourceUsage() {
 
 func (kv *KVServer) applyTask() {
 	var lastPrintTime time.Time
+
 	for !kv.killed() {
 		select {
 		case message := <-kv.applyCh:
 			if message.CommandValid {
-				// 只在需要访问共享数据时加锁
 				if time.Since(lastPrintTime) > 5*time.Second {
 					kv.printResourceUsage()
 					lastPrintTime = time.Now()
@@ -225,7 +217,6 @@ func (kv *KVServer) applyTask() {
 				}
 				kv.lastApplied = message.CommandIndex
 
-				// 批量收集需要处理的操作
 				var operations []raft.Op
 				var duplicateFlags []bool
 				var cachedReplies []*OpReply
@@ -240,24 +231,49 @@ func (kv *KVServer) applyTask() {
 					}
 				}
 
-				// 检查是否需要快照
 				snapshotNeeded := false
 				if kv.maxraftstate != -1 && kv.rf.GetRaftStateSize() >= kv.maxraftstate {
 					snapshotNeeded = true
 				}
 
-				kv.mu.Unlock() // 提前释放锁！
+				kv.mu.Unlock()
 
-				// 应用状态机操作（使用状态机锁）
 				var opReplies []*OpReply
-				kv.stateMachineMu.Lock()
-				for _, op := range operations {
-					reply := kv.applyToStateMachine(op)
-					opReplies = append(opReplies, reply)
-				}
-				kv.stateMachineMu.Unlock()
 
-				// 合并结果
+				if len(operations) > 0 {
+					batchOps := bridge.ConvertOpsToBatch(operations)
+
+					kv.stateMachineMu.Lock()
+					results := bridge.BatchApply(batchOps)
+					kv.stateMachineMu.Unlock()
+
+					for i, result := range results {
+						reply := &OpReply{
+							Value: result.Value,
+							Err:   "OK",
+						}
+						if !result.Success {
+							reply.Err = result.ErrMsg
+							if reply.Err == "" {
+								reply.Err = "FAILED"
+							}
+						}
+
+						if i < len(operations) {
+							if operations[i].OpType == Set ||
+								operations[i].OpType == HCount ||
+								operations[i].OpType == RCount ||
+								operations[i].OpType == BCount ||
+								operations[i].OpType == ZCount ||
+								operations[i].OpType == RCCount {
+								reply.Value = result.Value
+							}
+						}
+
+						opReplies = append(opReplies, reply)
+					}
+				}
+
 				var finalReplies []*OpReply
 				duplicateIndex := 0
 				operationIndex := 0
@@ -267,31 +283,32 @@ func (kv *KVServer) applyTask() {
 						finalReplies = append(finalReplies, cachedReplies[duplicateIndex])
 						duplicateIndex++
 					} else {
-						finalReplies = append(finalReplies, opReplies[operationIndex])
-						operationIndex++
+						if operationIndex < len(opReplies) {
+							finalReplies = append(finalReplies, opReplies[operationIndex])
+							operationIndex++
+						}
 					}
 				}
 
-				// 更新clientSeqTable（需要再次加锁，但时间很短）
 				kv.mu.Lock()
-				// 先复制一份用于快照
 				var clientSeqTableCopy map[int64]LastOperationInfo
 				if snapshotNeeded {
 					clientSeqTableCopy = make(map[int64]LastOperationInfo)
 				}
 
 				for i, op := range operations {
-					info := LastOperationInfo{
-						SeqId: op.SeqId,
-						Reply: opReplies[i],
-					}
-					kv.clientSeqTable[op.ClientId] = info
-					if snapshotNeeded {
-						clientSeqTableCopy[op.ClientId] = info
+					if i < len(opReplies) {
+						info := LastOperationInfo{
+							SeqId: op.SeqId,
+							Reply: opReplies[i],
+						}
+						kv.clientSeqTable[op.ClientId] = info
+						if snapshotNeeded {
+							clientSeqTableCopy[op.ClientId] = info
+						}
 					}
 				}
 
-				// 如果有快照需求，放入队列异步处理
 				if snapshotNeeded {
 					task := snapshotTask{
 						index:          message.CommandIndex,
@@ -302,21 +319,16 @@ func (kv *KVServer) applyTask() {
 				}
 				kv.mu.Unlock()
 
-				// 通知网络层 - 关键优化：先检查是否是Leader，再获取通道
 				_, isLeader := kv.rf.GetState()
 				if isLeader {
-					// 获取通知通道（不持有主锁）
 					notifyCh := kv.GetNotifyChannel(message.CommandIndex)
 
-					// 异步发送通知，避免阻塞
 					go func(ch chan []*OpReply, replies []*OpReply, idx int) {
 						select {
 						case ch <- replies:
-							// 发送成功，延迟清理
 							time.Sleep(100 * time.Millisecond)
 							kv.RemoveNotifyChannel(idx)
 						case <-time.After(50 * time.Millisecond):
-							// 超时，直接清理
 							kv.RemoveNotifyChannel(idx)
 						}
 					}(notifyCh, finalReplies, message.CommandIndex)
@@ -326,55 +338,26 @@ func (kv *KVServer) applyTask() {
 	}
 }
 
-func (kv *KVServer) applyToStateMachine(op raft.Op) *OpReply {
-	var value int
-	var err string
-	switch op.OpType {
-	case Set:
-		err = bridge.Array_Set(op.Key, op.Klen, op.Value, op.Vlen)
-	case Delete:
-		err = bridge.Array_Delete(op.Key, op.Klen)
-	case Count:
-		value = bridge.Array_Count()
+func (kv *KVServer) applyToStateMachineBatch(ops []raft.Op) []*OpReply {
+	replies := make([]*OpReply, len(ops))
 
-	case HSet:
-		err = bridge.Hash_Set(op.Key, op.Klen, op.Value, op.Vlen)
-	case HDelete:
-		err = bridge.Hash_Delete(op.Key, op.Klen)
-	case HCount:
-		value = bridge.Hash_Count()
+	batchOps := bridge.ConvertOpsToBatch(ops)
+	results := bridge.BatchApply(batchOps)
 
-	case RSet:
-		err = bridge.RB_Set(op.Key, op.Klen, op.Value, op.Vlen)
-	case RDelete:
-		err = bridge.RB_Delete(op.Key, op.Vlen)
-	case RCount:
-		value = bridge.RB_Count()
-
-	case BSet:
-		err = bridge.BTree_Set(op.Key, op.Klen, op.Value, op.Vlen)
-	case BDelete:
-		err = bridge.BTree_Delete(op.Key, op.Klen)
-	case BCount:
-		value = bridge.BTree_Count()
-
-	case ZSet:
-		err = bridge.Skiplist_Set(op.Key, op.Klen, op.Value, op.Vlen)
-	case ZDelete:
-		err = bridge.Skiplist_Delete(op.Key, op.Klen)
-	case ZCount:
-		value = bridge.Skiplist_Count()
-
-	case RCSet:
-		err = bridge.RC_Set(op.Key, op.Klen, op.Value, op.Vlen)
-	case RCDelete:
-		err = bridge.RC_Delete(op.Key, op.Vlen)
-	case RCCount:
-		value = bridge.RC_Count()
-	default:
-		fmt.Println("Wrroied Command")
+	for i, result := range results {
+		replies[i] = &OpReply{
+			Value: result.Value,
+			Err:   "OK",
+		}
+		if !result.Success {
+			replies[i].Err = result.ErrMsg
+			if replies[i].Err == "" {
+				replies[i].Err = "FAILED"
+			}
+		}
 	}
-	return &OpReply{Value: value, Err: err}
+
+	return replies
 }
 
 // 同时写入读取map即并发的读写map的时候会出现错误
