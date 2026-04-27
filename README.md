@@ -25,15 +25,15 @@
 
 #### 1.1 整体分片架构图
 
-![1.drawio](.\drawio-files\1.drawio.png)
+![1.drawio](./drawio-files/1.drawio.png)
 
 #### 1.2 单节点架构图
 
-![raft单集群架构.drawio](.\drawio-files\raft单集群架构.drawio.png)
+![raft单集群架构.drawio](./drawio-files/raft单集群架构.drawio.png)
 
 #### 1.3 数据流
 
-![数据流.drawio](.\drawio-files\数据流.png)
+![数据流.drawio](./drawio-files/数据流.png)
 
 ### 2.设计哲学与技术选型
 
