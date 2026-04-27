@@ -17,9 +17,6 @@ main
 # 忽略备份文件
 **/config.json.bak
 
-#忽略drawio
-drawio-files/
-
 #忽略部署文件
 /deploy/
 

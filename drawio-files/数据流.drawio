@@ -1,0 +1,187 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/24.7.5 Chrome/126.0.6478.183 Electron/31.3.0 Safari/537.36" version="24.7.5">
+  <diagram name="第 1 页" id="fIEa0f0XWcwS4osZTtbx">
+    <mxGraphModel dx="1195" dy="697" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="jedicGiwMk42WU9VB-yq-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-1" target="jedicGiwMk42WU9VB-yq-2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-1" value="客户端发起TCP连接" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="330" width="160" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-2" target="jedicGiwMk42WU9VB-yq-4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-2" value="handleConnection&lt;br&gt;为连接启动go程" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="350" y="60" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-4" target="jedicGiwMk42WU9VB-yq-6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-4" value="轻量级初始化&lt;br&gt;不创建批量缓冲&lt;br&gt;不启动批量go程" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="330" y="140" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-6" target="jedicGiwMk42WU9VB-yq-9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-6" value="parseRESP&lt;br&gt;解析客户端命令" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="350" y="220" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-9" target="jedicGiwMk42WU9VB-yq-11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-49" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-9" target="jedicGiwMk42WU9VB-yq-45">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-9" value="命令类型" style="rhombus;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="370" y="310" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-29" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-11" target="jedicGiwMk42WU9VB-yq-14">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-11" value="Commited函数：&lt;br&gt;1.检查是否为leader&lt;br&gt;2.创建OP对象&lt;br&gt;3.提交到全局队列" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="190" y="430" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-13" value="SET/DEL命令" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="270" y="328" width="100" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-21" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-14" target="jedicGiwMk42WU9VB-yq-15">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-14" value="batchWorker&lt;br&gt;从全局队列接收请求" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="190" y="525" width="150" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-22" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-15" target="jedicGiwMk42WU9VB-yq-16">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-15" value="添加到本地批量队列" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="620" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-16" target="jedicGiwMk42WU9VB-yq-17">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-25" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-26" target="jedicGiwMk42WU9VB-yq-14">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-16" value="批量大小是否达到阈值或定时器超时？" style="rhombus;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="190" y="700" width="150" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-31" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-17" target="jedicGiwMk42WU9VB-yq-30">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-17" value="processBatch&lt;br&gt;处理当前批量" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="205" y="810" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-19" value="是" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="250" y="780" width="40" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-27" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-16" target="jedicGiwMk42WU9VB-yq-26">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="265" y="700" as="sourcePoint" />
+            <mxPoint x="265" y="580" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-26" value="否" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="245" y="640" width="40" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-33" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-30" target="jedicGiwMk42WU9VB-yq-32">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-30" value="提交批量到raft&lt;div&gt;rf.Start(ops)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="205" y="880" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-35" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-32" target="jedicGiwMk42WU9VB-yq-34">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-32" value="raft日志复制与提交等待大多数节点确认" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="205" y="950" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-37" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-34" target="jedicGiwMk42WU9VB-yq-36">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-34" value="applyTask&lt;br&gt;状态机应用" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="205" y="1020" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-39" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-36" target="jedicGiwMk42WU9VB-yq-38">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-36" value="单次批量CGO调用&lt;br&gt;brige.BatchApply" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="205" y="1090" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-43" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-38" target="jedicGiwMk42WU9VB-yq-41">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-38" value="发送响应到notifyChannels" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="205" y="1160" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-40" value="processBatch分发响应写入对应respch" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="205" y="1220" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-44" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-41" target="jedicGiwMk42WU9VB-yq-42">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-41" value="Commited解除阻塞" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="205" y="1280" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-42" value="safetyWrite写回客户端" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="345" y="1360" width="130" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-55" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-45" target="jedicGiwMk42WU9VB-yq-46">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-45" value="Commited" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="490" y="1090" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-46" value="检查leaseRead&lt;br&gt;直接读取本地状态机" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="490" y="1160" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-57" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-47" target="jedicGiwMk42WU9VB-yq-48">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-47" value="brige.xxx_Get&lt;div&gt;CGO读取数据&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="490" y="1220" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-60" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-48" target="jedicGiwMk42WU9VB-yq-42">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-48" value="立即返回客户端" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="490" y="1280" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-56" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.499;entryY=0.086;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="jedicGiwMk42WU9VB-yq-46" target="jedicGiwMk42WU9VB-yq-47">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-61" value="GET命令" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="455" y="328" width="70" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-64" value="" style="endArrow=none;dashed=1;html=1;dashPattern=1 3;strokeWidth=2;rounded=0;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="360" y="880" as="sourcePoint" />
+            <mxPoint x="360" y="510" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-66" value="" style="endArrow=none;dashed=1;html=1;dashPattern=1 3;strokeWidth=2;rounded=0;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="70" y="510" as="sourcePoint" />
+            <mxPoint x="360" y="510" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-67" value="" style="endArrow=none;dashed=1;html=1;dashPattern=1 3;strokeWidth=2;rounded=0;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="60" y="880" as="sourcePoint" />
+            <mxPoint x="60" y="510" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-68" value="" style="endArrow=none;dashed=1;html=1;rounded=0;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="360" y="880" as="sourcePoint" />
+            <mxPoint x="60" y="880" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="jedicGiwMk42WU9VB-yq-69" value="全局批量处理go程" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="60" y="480" width="120" height="30" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
