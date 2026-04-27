@@ -87,22 +87,6 @@ func main() {
 			cfg.ID, cfg.RPCAddr, cfg.ClientAddr)
 	}
 
-	// 启动监控
-	if nodes[0] != nil && nodes[0].kvServer != nil {
-		go func() {
-			ticker := time.NewTicker(5 * time.Second)
-			defer ticker.Stop()
-
-			for range ticker.C {
-				bm := mnet.GetBatchManager()
-				if bm != nil {
-					batchSize, avgLatency, throughput := bm.GetStats()
-					fmt.Printf("[Stats] BatchSize=%d, AvgLatency=%dms, Throughput=%d ops\n",
-						batchSize, avgLatency, throughput)
-				}
-			}
-		}()
-	}
 	// 等待中断信号
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

@@ -1,1 +1,0 @@
-rm rocksdb_backup/ raft-persist/ rocksdb_data/ -rf

@@ -111,7 +111,7 @@ func sendRESPResponse(safeWrite func([]byte), respType string, data string) {
 			safeWrite([]byte("$-1\r\n")) // Redis nil
 		} else {
 			// len(data)-1代表去除结尾的空字符
-			safeWrite([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(data)-1, data)))
+			safeWrite([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(data), data)))
 		}
 	case "error":
 		safeWrite([]byte(fmt.Sprintf("-%s\r\n", data)))

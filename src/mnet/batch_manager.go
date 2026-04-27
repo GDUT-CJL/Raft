@@ -187,7 +187,7 @@ func (bm *BatchManager) processBatch(batch []*BatchRequest) {
 			}
 		}
 
-	case <-time.After(30 * time.Second):
+	case <-time.After(5 * time.Second):
 		for _, req := range batch {
 			req.RespCh <- &BatchResponse{
 				Success: false,

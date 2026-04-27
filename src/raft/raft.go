@@ -21,16 +21,19 @@ import (
 	"fmt"
 	"log"
 	"net"
+
 	//"os"
 	"bytes"
 	"course/labgob"
 	"sync"
 	"sync/atomic"
 	"time"
+
 	// 替换为实际的 proto 包路径
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 )
 
 // 定义最短和最长的超时时间分别为 250ms和400ms
@@ -38,7 +41,7 @@ const (
 	MinElectionTimeout time.Duration = 500 * time.Millisecond
 	MaxElectionTimeout time.Duration = 1500 * time.Millisecond
 
-	replicateInterval time.Duration = 30 * time.Millisecond
+	replicateInterval time.Duration = 80 * time.Millisecond
 )
 
 const (
@@ -267,6 +270,7 @@ func (rf *Raft) becomeLeaderLocked() {
 	// 启动独立的心跳协程
 	rf.updateLease()
 	go rf.heartbeatTicker(rf.currentTerm)
+	go rf.unifiedReplicator(rf.currentTerm)
 }
 
 // return currentTerm and whether this server
@@ -371,7 +375,7 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 	rf.votedFor = -1
 
 	// ===== 初始化 Lease Read 相关字段 =====
-	rf.leaseDuration = 200 * time.Millisecond // 可调，建议小于 MinElectionTimeout
+	rf.leaseDuration = 400 * time.Millisecond // 可调，应小于 MinElectionTimeout(500ms)，刷新间隔80ms时留5倍余量
 	rf.lastHeartbeatTime = time.Now()         // 初始化为当前时间
 	rf.leaseExpiration = rf.lastHeartbeatTime.Add(rf.leaseDuration)
 	rf.enableLeaseRead = true // 默认开启 Lease Read
@@ -433,13 +437,16 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 		conn, err := grpc.Dial(
 			addr,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithKeepaliveParams(keepalive.ClientParameters{
+				Time:                10 * time.Second,
+				Timeout:             3 * time.Second,
+				PermitWithoutStream: true,
+			}),
 			grpc.WithDefaultCallOptions(
-				grpc.MaxCallRecvMsgSize(10*1024*1024), // 10MB
-			//grpc.MaxCallSendMsgSize(10*1024*1024),
-			//grpc.UseCompressor("gzip"), // 启用压缩
+				grpc.MaxCallRecvMsgSize(10*1024*1024),
 			),
-			grpc.WithInitialWindowSize(2*1024*1024),     // 2MB
-			grpc.WithInitialConnWindowSize(4*1024*1024), // 4MB
+			grpc.WithInitialWindowSize(2*1024*1024),
+			grpc.WithInitialConnWindowSize(4*1024*1024),
 		)
 		if err != nil {
 			log.Fatalf("did not connect: %v", err)

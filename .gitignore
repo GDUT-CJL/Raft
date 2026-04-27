@@ -7,6 +7,7 @@ src/client/libjlclient.so
 src/client/Test
 src/client_cpp/test
 src/kvstore
+src/*.sh
 
 # 忽略 Go 构建产物
 main
@@ -15,6 +16,15 @@ main
 
 # 忽略备份文件
 **/config.json.bak
+
+#忽略drawio
+drawio-files/
+
+#忽略部署文件
+/deploy/
+
+#忽略测试文件
+/benchmark_tool/
 
 # 忽略日志和临时文件
 /logs

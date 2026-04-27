@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"sort"
+
 	//"sync"
 	"fmt"
 	"time"
@@ -54,13 +55,13 @@ type AppendEntriesReply struct {
 // reply为传出参数
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	LOG(rf.me, rf.currentTerm, DDebug, "<- S%d, Receive log, Prev=[%d]T%d, Len()=%d", args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries))
 	reply.Term = rf.currentTerm
 	reply.Success = false
 
 	if args.Term < rf.currentTerm {
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log", args.LeaderId)
+		rf.mu.Unlock()
 		return
 	}
 
@@ -68,53 +69,55 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.becomeFollowerLocked(args.Term)
 	}
 
-	// 重置选举超时时间，表示我不再争取作为leader，因为你已经是我的leader
-	// 将这个重置放在前面，对 rf.log 进行任何操作之前调用。这确保了在处理完所有事情（例如日志匹配和追加日志条目）后才重置选举计时器
-	defer rf.resetElectionTimerLocked()
+	rf.resetElectionTimerLocked()
 
-	// 本地的日志太久没有与leader同步了
-	// 检查args.PrevLogIndex是否超出了跟随者的日志长度。如果超出，说明跟随者的日志不够长，拒绝日志追加并记录日志。
-	// 需要记录具体的任期和日志中信息进行回复
 	if args.PrevLogIndex >= rf.log.size() {
 		reply.ConfilictIndex = rf.log.size()
 		reply.ConfilictTerm = InvalidIndex
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d,Reject log,Follower too short,len : %d <= Pre:%d", args.LeaderId, rf.log.size(), args.PrevLogIndex)
+		rf.mu.Unlock()
 		return
 	}
-	// 检查领导者的前一个日志索引 (PrevLogIndex) 是否小于跟随者的快照最后索引 (snapLastIdx)。
-	// 这表示跟随者的日志已经被截断，而该索引对应的条目不再存在于跟随者的日志中。
 	if args.PrevLogIndex < rf.log.snapLastIdx {
 		reply.ConfilictTerm = rf.log.snapLastTerm
 		reply.ConfilictIndex = rf.log.snapLastIdx
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, Follower log truncated in %d", args.LeaderId, rf.log.snapLastIdx)
+		rf.mu.Unlock()
 		return
 	}
-	// 代码执行到这里说明此时leader和follower的日志号已经一致
-	// 检查任期号是否一致，只有日志号和任期号一致才可以返回成功
 	if rf.log.at(args.PrevLogIndex).Term != args.PrevLogTerm {
 		reply.ConfilictTerm = rf.log.at(args.PrevLogIndex).Term
-		reply.ConfilictIndex = rf.log.firstFor(reply.ConfilictTerm) // 在follower找到这个任期的第一个日志，Leader可以据此快速移动其匹配位置，缩短同步时间。
+		reply.ConfilictIndex = rf.log.firstFor(reply.ConfilictTerm)
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d,Reject log,Pre Log not match,[%d]: T%d != T%d", args.LeaderId, args.PrevLogTerm, rf.log.at(args.PrevLogIndex).Term)
+		rf.mu.Unlock()
 		return
 	}
-	// 记录leaderIP
+
 	rf.LeaderIP = args.LeaderIP
 
-	// 追加日志
-	rf.log.appendFrom(args.PrevLogIndex, args.Entries)
-	rf.persistLocked()
-	reply.Success = true
-	LOG(rf.me, rf.currentTerm, DLog2, "Follower append logs: (%d, %d]", args.PrevLogIndex, args.PrevLogIndex+len(args.Entries))
+	prevLogIndex := args.PrevLogIndex
+	entries := make([]LogEntry, len(args.Entries))
+	copy(entries, args.Entries)
+	leaderCommit := args.LeaderCommit
 
-	// TODO：LeaderCommit
-	// 如果leader已提交的日志号大于本地要提交的日志号
-	if args.LeaderCommit > rf.commitIndex {
-		LOG(rf.me, rf.currentTerm, DApply, "Follower update the commit index %d->%d", rf.commitIndex, args.LeaderCommit)
-		rf.commitIndex = args.LeaderCommit   // 将本地的要提交日志号更新
-		if rf.commitIndex >= rf.log.size() { // 如果本地提交日志号比本身日志条目还大
-			rf.commitIndex = rf.log.size() - 1 // 则将要提交的日志号更新为日志长度 - 1
+	rf.mu.Unlock()
+
+	rf.log.appendFrom(prevLogIndex, entries)
+	rf.persistLocked()
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Success = true
+	LOG(rf.me, rf.currentTerm, DLog2, "Follower append logs: (%d, %d]", prevLogIndex, prevLogIndex+len(entries))
+
+	if leaderCommit > rf.commitIndex {
+		LOG(rf.me, rf.currentTerm, DApply, "Follower update the commit index %d->%d", rf.commitIndex, leaderCommit)
+		rf.commitIndex = leaderCommit
+		if rf.commitIndex >= rf.log.size() {
+			rf.commitIndex = rf.log.size() - 1
 		}
-		rf.applyCond.Signal() // 发送信号准备提交
+		rf.applyCond.Signal()
 	}
 }
 
@@ -195,8 +198,14 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		LeaderIP:     leaderIPBytes,
 	}
 
-	timeout := 200 * time.Millisecond // 默认100ms
-
+	// timeout := 200 * time.Millisecond // 默认100ms
+	timeout := 500 * time.Millisecond
+	if len(args.Entries) > 10 {
+		timeout = time.Duration(len(args.Entries)) * 50 * time.Millisecond // 每条 50ms
+	}
+	if timeout > 5*time.Second {
+		timeout = 5 * time.Second
+	}
 	// 设置超时上下文
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+
 	//"strconv"
 	"time"
 )
@@ -38,13 +39,6 @@ func (rf *Raft) resetElectionTimerLocked() {
 	// 设置超时时间
 	rf.electionTimout = MinElectionTimeout + time.Duration(rand.Int63()%randRange)
 }
-
-// func (rf *Raft) resetElectionTimerLocked() {
-// 	diff := int64(MaxElectionTimeout - MinElectionTimeout)
-// 	randNs := rf.rand.Int63n(diff) // 使用节点自己的随机源
-// 	rf.electionTimout = MinElectionTimeout + time.Duration(randNs)
-// 	rf.electionStart = time.Now()
-// }
 
 // 是否超时
 func (rf *Raft) isElectionTimeOut() bool {
@@ -222,8 +216,6 @@ func (rf *Raft) startElection(term int) {
 
 				rf.LeaderIP = ip
 				fmt.Printf(" Node %d become leader IP:%s\n", rf.me, rf.LeaderIP)
-				// 发起心跳和日志同步，通知其他成员我已经是leader并开始复制我的日志
-				go rf.replicationTicker(term)
 			}
 		}
 	}
