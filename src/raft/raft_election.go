@@ -5,8 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
-
-	//"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -173,74 +172,71 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return true
 }
 
-// 启动选举go程函数
 func (rf *Raft) startElection(term int) {
 	fmt.Printf("节点 %d 开始选举,当前peers数量: %d\n", rf.me, len(rf.peers))
-	vote := 0
-	askVoteFromPeer := func(peer int, args *RequestVoteArgs) {
-		reply := &RequestVoteReply{}
-		// 调用sendRequestVote RPC请求进行索票
-		ok := rf.sendRequestVote(peer, args, reply)
-		//fmt.Printf("%v",ok)
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
-		if !ok { // 如果返回错误，说明索票直接失败，返回
-			LOG(rf.me, rf.currentTerm, DDebug, "Ask vote from S%d,Lost or error", peer)
-			//fmt.Println("成为leader失败")
-			return
-		}
-		// 任期对齐
-		if reply.Term > rf.currentTerm { // 如果回复的票数比我当前想要成为leader的任期还大
-			rf.becomeFollowerLocked(reply.Term) // 则我自己就取消作为leader，变为follower且将自己任期改为reply.Term
-			return                              //返回
-		}
 
-		// 检查自己的上下文状态是否变化
-		if rf.contextLostLocked(Candidate, rf.currentTerm) {
-			LOG(rf.me, rf.currentTerm, DVote, "Lost context, abort RequestVoteReply for S%d", peer)
-			return
-		}
-		// 如果回复我的票表示同意给我选票
-		if reply.VoteGranted {
-			vote++                      // 则票数自增1
-			if vote > len(rf.peers)/2 { //如果我的票数大于一半以上的同意票
-				rf.becomeLeaderLocked() // 那么我成为leader
-				ip, err := getLocalIP()
-				if err != nil {
-					fmt.Println("Error:", err)
-					return
-				}
-				// var port int
-				// port = 8006 + rf.me
-				// rf.LeaderIP = ip + ":" + strconv.Itoa(port)
-
-				rf.LeaderIP = ip
-				fmt.Printf(" Node %d become leader IP:%s\n", rf.me, rf.LeaderIP)
-			}
-		}
-	}
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	// 检查一致性，是否为Candidate状态，和任期是否有改变
 	if rf.contextLostLocked(Candidate, term) {
 		LOG(rf.me, rf.currentTerm, DVote, "Lost Candidate to %s, abort RequestVote", rf.role)
+		rf.mu.Unlock()
 		return
 	}
+
 	l := rf.log.size()
-	for peer := 0; peer < len(rf.peers); peer++ { // 对于每一个rpc节点遍历
-		if peer == rf.me { //如果是自己的话，就选票加1
-			vote++
+	lastLogTerm := rf.log.at(l - 1).Term
+	rf.mu.Unlock()
+
+	var voteCount int32 = 1
+	votesNeeded := int32(len(rf.peers)/2 + 1)
+
+	args := &RequestVoteArgs{
+		Term:         term,
+		CandidateId:  rf.me,
+		LastLogIndex: l - 1,
+		LastLogTerm:  lastLogTerm,
+	}
+
+	for peer := 0; peer < len(rf.peers); peer++ {
+		if peer == rf.me {
 			continue
 		}
-		// 否则发送RPC请求，询问是否给我当前节点选票
-		args := &RequestVoteArgs{
-			Term:         rf.currentTerm,
-			CandidateId:  rf.me,
-			LastLogIndex: l - 1,
-			LastLogTerm:  rf.log.at(l - 1).Term,
+		go rf.askVoteFromPeer(peer, args, term, &voteCount, votesNeeded)
+	}
+}
+
+func (rf *Raft) askVoteFromPeer(peer int, args *RequestVoteArgs, term int, voteCount *int32, votesNeeded int32) {
+	reply := &RequestVoteReply{}
+	ok := rf.sendRequestVote(peer, args, reply)
+	if !ok {
+		LOG(rf.me, rf.currentTerm, DDebug, "Ask vote from S%d,Lost or error", peer)
+		return
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if reply.Term > rf.currentTerm {
+		rf.becomeFollowerLocked(reply.Term)
+		return
+	}
+
+	if rf.contextLostLocked(Candidate, term) {
+		LOG(rf.me, rf.currentTerm, DVote, "Lost context, abort RequestVoteReply for S%d", peer)
+		return
+	}
+
+	if reply.VoteGranted {
+		newCount := atomic.AddInt32(voteCount, 1)
+		if newCount == votesNeeded {
+			rf.becomeLeaderLocked()
+			ip, err := getLocalIP()
+			if err != nil {
+				fmt.Println("Error:", err)
+				return
+			}
+			rf.LeaderIP = ip
+			fmt.Printf(" Node %d become leader IP:%s\n", rf.me, rf.LeaderIP)
 		}
-		// 另起go程向其他RPC节点要票
-		go askVoteFromPeer(peer, args)
 	}
 }
 

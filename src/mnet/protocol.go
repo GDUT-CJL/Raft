@@ -121,20 +121,16 @@ func sendRESPResponse(safeWrite func([]byte), respType string, data string) {
 }
 
 func checkLeaseRead(rf *raft.Raft, safeWrite func([]byte)) bool {
-	// 检查是否是 leader
-	_, isLeader := rf.GetState()
-	if !isLeader {
+	if !rf.IsLeader() {
 		sendRESPResponse(safeWrite, "error", "ERR not leader")
 		return false
 	}
 
-	// 检查租约是否有效
 	if !rf.IsLeaseValid() {
 		sendRESPResponse(safeWrite, "error", "ERR lease expired")
 		return false
 	}
 
-	// 等待状态机应用到租约读取点
 	readIndex := rf.GetLeaseReadIndex()
 	if !rf.WaitForApplied(readIndex) {
 		sendRESPResponse(safeWrite, "error", "ERR wait for apply timeout")
@@ -146,10 +142,6 @@ func checkLeaseRead(rf *raft.Raft, safeWrite func([]byte)) bool {
 
 // handleConnection 处理客户端连接
 func handleConnection(kv *server.KVServer, conn net.Conn) {
-	handleConnectionImpl(kv, conn)
-}
-
-func handleConnectionImpl(kv *server.KVServer, conn net.Conn) {
 	var writeMutex sync.Mutex
 	writer := bufio.NewWriterSize(conn, 64*1024)
 

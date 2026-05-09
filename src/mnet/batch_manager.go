@@ -22,7 +22,7 @@ var (
 type BatchRequest struct {
 	Op      raft.Op
 	Conn    net.Conn
-	RespCh  chan *BatchResponse
+	RespCh  chan *BatchResponse // 每个请求都有一个响应通道，用于接收响应
 	AddedAt time.Time
 }
 
@@ -33,19 +33,19 @@ type BatchResponse struct {
 }
 
 type BatchManager struct {
-	requestQueue  chan *BatchRequest
-	batchSize     int32
-	batchTimeout  time.Duration
-	minBatchSize  int32
-	maxBatchSize  int32
-	kv            *server.KVServer
-	rf            *raft.Raft
-	wg            sync.WaitGroup
-	stopCh        chan struct{}
-	pendingOps    int64
-	avgLatency    int64
-	throughput    int64
-	lastBatchTime time.Time
+	requestQueue  chan *BatchRequest // 全局队列，用于存储待处理的请求
+	batchSize     int32              // 批量大小，用于控制每个批次的请求数量
+	batchTimeout  time.Duration      // 批量超时时间，用于控制每个批次的处理时间
+	minBatchSize  int32              // 最小批量大小，用于控制每个批次的请求数量下限
+	maxBatchSize  int32              // 最大批量大小，用于控制每个批次的请求数量上限
+	kv            *server.KVServer   // KVServer实例，用于处理写操作
+	rf            *raft.Raft         // Raft实例，用于处理读操作
+	wg            sync.WaitGroup     // 用于等待所有批次处理完成
+	stopCh        chan struct{}      // 用于通知批量处理线程停止
+	pendingOps    int64              // 当前待处理的请求数量
+	avgLatency    int64              // 平均处理延迟，单位：微秒
+	throughput    int64              // 处理吞吐量，单位：请求数/秒
+	lastBatchTime time.Time          // 上次处理批次的时间戳
 }
 
 func SetBatchManager(bm *BatchManager) {
@@ -81,19 +81,20 @@ func NewBatchManager(kv *server.KVServer, rf *raft.Raft, initialBatchSize int, b
 
 // 往全局队列中放入请求数据
 func (bm *BatchManager) Submit(op raft.Op, conn net.Conn) *BatchResponse {
+	// 每个请求创建一个响应通道，用于接收响应结果
 	respCh := make(chan *BatchResponse, 1)
 
 	req := &BatchRequest{
 		Op:      op,
-		Conn:    conn,
-		RespCh:  respCh,
+		Conn:    conn,   // 连接对象，用于发送响应
+		RespCh:  respCh, // 每个请求对应的一个响应通道
 		AddedAt: time.Now(),
 	}
 
 	select {
 	case bm.requestQueue <- req:
 		atomic.AddInt64(&bm.pendingOps, 1)
-		return <-respCh
+		return <-respCh //阻塞等待响应，收到后立即返回
 	default:
 		return &BatchResponse{
 			Success: false,

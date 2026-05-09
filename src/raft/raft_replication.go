@@ -100,24 +100,33 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	copy(entries, args.Entries)
 	leaderCommit := args.LeaderCommit
 
-	rf.mu.Unlock()
-
 	rf.log.appendFrom(prevLogIndex, entries)
-	rf.persistLocked()
 
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	raftstate, snapshot := rf.preparePersistData()
 
-	reply.Success = true
-	LOG(rf.me, rf.currentTerm, DLog2, "Follower append logs: (%d, %d]", prevLogIndex, prevLogIndex+len(entries))
-
+	needSignal := false
 	if leaderCommit > rf.commitIndex {
 		LOG(rf.me, rf.currentTerm, DApply, "Follower update the commit index %d->%d", rf.commitIndex, leaderCommit)
 		rf.commitIndex = leaderCommit
 		if rf.commitIndex >= rf.log.size() {
 			rf.commitIndex = rf.log.size() - 1
 		}
+		needSignal = true
+	}
+
+	LOG(rf.me, rf.currentTerm, DLog2, "Follower append logs: (%d, %d]", prevLogIndex, prevLogIndex+len(entries))
+
+	rf.mu.Unlock()
+
+	// 同步持久化 占用RPC的时间
+	rf.persistDirect(raftstate, snapshot)
+
+	reply.Success = true
+	LOG(rf.me, rf.currentTerm, DPersist, "Follower persist completed for logs: (%d, %d]", prevLogIndex, prevLogIndex+len(entries))
+	if needSignal {
+		rf.mu.Lock()
 		rf.applyCond.Signal()
+		rf.mu.Unlock()
 	}
 }
 
@@ -198,13 +207,12 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		LeaderIP:     leaderIPBytes,
 	}
 
-	// timeout := 200 * time.Millisecond // 默认100ms
-	timeout := 500 * time.Millisecond
-	if len(args.Entries) > 10 {
-		timeout = time.Duration(len(args.Entries)) * 50 * time.Millisecond // 每条 50ms
+	timeout := 800 * time.Millisecond
+	if len(args.Entries) > 5 {
+		timeout = 800*time.Millisecond + time.Duration(len(args.Entries))*80*time.Millisecond
 	}
-	if timeout > 5*time.Second {
-		timeout = 5 * time.Second
+	if timeout > 10*time.Second {
+		timeout = 10 * time.Second
 	}
 	// 设置超时上下文
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -238,85 +246,29 @@ func (rf *Raft) getMajorityIndexLocked() int {
 	return tmpIndexs[majorityIndex] // 返回对应的日志号
 }
 
-// 启动日志复制和心跳
+type replicationTask struct {
+	peer         int
+	args         *AppendEntriesArgs
+	snapshotArgs *InstallSnapshotArgs
+	isSnapshot   bool
+}
+
 func (rf *Raft) startReplication(term int) bool {
-	replicateToPeer := func(peer int, args *AppendEntriesArgs) {
-		reply := &AppendEntriesReply{}
-		ok := rf.sendAppendEntries(peer, args, reply)
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
-		if !ok {
-			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Lost or crashed", peer)
-			return
-		}
-
-		// 如果回复我的节点的任期比我的任期还大，那么我变为follower
-		if reply.Term > rf.currentTerm {
-			rf.becomeFollowerLocked(reply.Term)
-			return
-		}
-		if rf.contextLostLocked(Leader, term) {
-			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Context Lost, T%d:Leader->T%d:%s", peer, term, rf.currentTerm, rf.role)
-			return
-		}
-		// 如果回复失败，说明日志号不对，需要进行检查
-		if !reply.Success {
-			prevIndex := rf.nextIndex[peer]
-			// 如果任期为空
-			if reply.ConfilictTerm == InvalidTerm {
-				// 说明follower的日志太短，直接将nextIndex赋值为ConfilictIndex退到Follower日志末尾
-				rf.nextIndex[peer] = reply.ConfilictIndex
-			} else { // 否则，以 Leader 日志为准，跳过 ConfilictTerm 的所有日志
-				firstTermIndex := rf.log.firstFor(reply.ConfilictTerm)
-				if firstTermIndex != InvalidTerm {
-					rf.nextIndex[peer] = firstTermIndex + 1
-				} else { //如果发现Leader日志中不存在ConfilictTerm的任何日志，则以Follower为准跳过ConflictTerm，即使用ConfilictIndex
-					rf.nextIndex[peer] = reply.ConfilictIndex
-				}
-			}
-			// 设置为prevNext和rf.nextIndex[peer]最小的，防止较快的RPC会覆盖掉原来的小的值
-			if rf.nextIndex[peer] > prevIndex {
-				rf.nextIndex[peer] = prevIndex
-			}
-			nextPrevIndex := rf.nextIndex[peer] - 1
-			nextPrevTerm := InvalidTerm
-			if nextPrevIndex >= rf.log.snapLastIdx {
-				nextPrevTerm = rf.log.at(nextPrevIndex).Term
-			}
-			LOG(rf.me, rf.currentTerm, DLog, "-> S%d,Not match at Prev = [%d]T%d,Try Next Prev = [%d]T%d",
-				peer, args.PrevLogIndex, args.PrevLogTerm, nextPrevIndex, nextPrevTerm)
-
-			LOG(rf.me, rf.currentTerm, DDebug, "-> %S%d,Leader log=%v", peer, rf.log.String())
-			return
-		}
-
-		// 如果成功，那么将本地的matchIndex（成功匹配的日志索引号）进行更新
-		rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries) // 重要！！！
-		// 下一次进行发送的日志号也进行更新
-		rf.nextIndex[peer] = rf.matchIndex[peer] + 1
-		// TODO：更新commitIndex
-		majorityMactched := rf.getMajorityIndexLocked()
-		// 当日志复制过半且提交的日志对应的任期为当前的任期时候才可以提交
-		if majorityMactched > rf.commitIndex && rf.log.at(majorityMactched).Term == rf.currentTerm {
-			LOG(rf.me, rf.currentTerm, DApply, "leader update commit index %d -> %d", rf.commitIndex, majorityMactched)
-			rf.commitIndex = majorityMactched // 更新commitIndex的值，用于applyTicker遍历的时候使用
-			rf.applyCond.Signal()             // 唤醒applyTicker中的睡眠，将已提交但未应用的日志发送到applyCh，供状态机执行
-		}
-	}
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
 	if rf.contextLostLocked(Leader, term) {
 		LOG(rf.me, rf.currentTerm, DLog, "Lost Leader[%d] to %s[T%d]", term, rf.role, rf.currentTerm)
+		rf.mu.Unlock()
 		return false
 	}
+
+	tasks := make([]replicationTask, 0, len(rf.peers))
 	for peer := 0; peer < len(rf.peers); peer++ {
-		if peer == rf.me { //如果是自己
+		if peer == rf.me {
 			rf.matchIndex[peer] = rf.log.size() - 1
 			rf.nextIndex[peer] = rf.log.size()
 			continue
 		}
-		// 初始化传入的参数，也即是要发送给各个其他RPC节点的参数
+
 		prevIndex := rf.nextIndex[peer] - 1
 		if prevIndex < rf.log.snapLastIdx {
 			args := &InstallSnapshotArgs{
@@ -326,31 +278,94 @@ func (rf *Raft) startReplication(term int) bool {
 				LastIncludedTerm:  rf.log.snapLastTerm,
 				Snapshot:          rf.log.snapshot,
 			}
-			go rf.InstallToPeer(peer, term, args)
+			tasks = append(tasks, replicationTask{
+				peer:         peer,
+				snapshotArgs: args,
+				isSnapshot:   true,
+			})
 			continue
 		}
+
 		prevTerm := rf.log.at(prevIndex).Term
+		entries := rf.log.tail(prevIndex + 1)
 		args := &AppendEntriesArgs{
 			Term:         term,
 			LeaderId:     rf.me,
 			PrevLogIndex: prevIndex,
 			PrevLogTerm:  prevTerm,
-			Entries:      rf.log.tail(prevIndex + 1), // 从 rf.log 切片中截取从索引 prevIndex+1 开始到末尾的所有日志条目。左闭右开
+			Entries:      entries,
 			LeaderCommit: rf.commitIndex,
 			LeaderIP:     rf.LeaderIP,
 		}
-		go replicateToPeer(peer, args)
+		tasks = append(tasks, replicationTask{
+			peer:       peer,
+			args:       args,
+			isSnapshot: false,
+		})
+	}
+	rf.mu.Unlock()
+
+	for _, task := range tasks {
+		if task.isSnapshot {
+			go rf.InstallToPeer(task.peer, term, task.snapshotArgs)
+		} else {
+			go rf.processReplicationReply(task.peer, task.args, term)
+		}
 	}
 	return true
 }
 
-// 只有在某个term内循环，当这个任期结束则心跳结束
-func (rf *Raft) replicationTicker(term int) {
-	for !rf.killed() {
-		ok := rf.startReplication(term)
-		if !ok {
-			break
+func (rf *Raft) processReplicationReply(peer int, args *AppendEntriesArgs, term int) {
+	reply := &AppendEntriesReply{}
+	ok := rf.sendAppendEntries(peer, args, reply)
+	if !ok {
+		LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Lost or crashed", peer)
+		return
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if reply.Term > rf.currentTerm {
+		rf.becomeFollowerLocked(reply.Term)
+		return
+	}
+	if rf.contextLostLocked(Leader, term) {
+		LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Context Lost, T%d:Leader->T%d:%s", peer, term, rf.currentTerm, rf.role)
+		return
+	}
+
+	if !reply.Success {
+		prevIndex := rf.nextIndex[peer]
+		if reply.ConfilictTerm == InvalidTerm {
+			rf.nextIndex[peer] = reply.ConfilictIndex
+		} else {
+			firstTermIndex := rf.log.firstFor(reply.ConfilictTerm)
+			if firstTermIndex != InvalidTerm {
+				rf.nextIndex[peer] = firstTermIndex + 1
+			} else {
+				rf.nextIndex[peer] = reply.ConfilictIndex
+			}
 		}
-		time.Sleep(replicateInterval)
+		if rf.nextIndex[peer] > prevIndex {
+			rf.nextIndex[peer] = prevIndex
+		}
+		nextPrevIndex := rf.nextIndex[peer] - 1
+		nextPrevTerm := InvalidTerm
+		if nextPrevIndex >= rf.log.snapLastIdx {
+			nextPrevTerm = rf.log.at(nextPrevIndex).Term
+		}
+		LOG(rf.me, rf.currentTerm, DLog, "-> S%d,Not match at Prev = [%d]T%d,Try Next Prev = [%d]T%d",
+			peer, args.PrevLogIndex, args.PrevLogTerm, nextPrevIndex, nextPrevTerm)
+		return
+	}
+
+	rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
+	rf.nextIndex[peer] = rf.matchIndex[peer] + 1
+	majorityMactched := rf.getMajorityIndexLocked()
+	if majorityMactched > rf.commitIndex && rf.log.at(majorityMactched).Term == rf.currentTerm {
+		LOG(rf.me, rf.currentTerm, DApply, "leader update commit index %d -> %d", rf.commitIndex, majorityMactched)
+		rf.commitIndex = majorityMactched
+		rf.applyCond.Signal()
 	}
 }

@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"sync"
 	"time"
 )
 
@@ -65,15 +64,15 @@ func (rf *Raft) sendHeartbeat(server int, term int) {
 	}
 
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
 	if reply.Term > rf.currentTerm {
 		rf.becomeFollowerLocked(reply.Term)
+		rf.mu.Unlock()
 		return
 	}
 	if reply.Success {
 		rf.updateLease()
 	}
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) takeHeartbeatSnapshot(term int) *heartbeatSnapshot {
@@ -126,11 +125,8 @@ func (rf *Raft) sendHeartbeatFromSnapshot(snap *heartbeatSnapshot, term int) {
 		return
 	}
 
-	var wg sync.WaitGroup
 	for i := range snap.peers {
-		wg.Add(1)
 		go func(data peerHeartbeatData) {
-			defer wg.Done()
 			if data.isSnapshot {
 				args := &InstallSnapshotArgs{
 					Term:              snap.term,
@@ -155,19 +151,20 @@ func (rf *Raft) sendHeartbeatFromSnapshot(snap *heartbeatSnapshot, term int) {
 				if !ok {
 					return
 				}
+
 				rf.mu.Lock()
-				defer rf.mu.Unlock()
 				if reply.Term > rf.currentTerm {
 					rf.becomeFollowerLocked(reply.Term)
+					rf.mu.Unlock()
 					return
 				}
 				if reply.Success {
 					rf.updateLease()
 				}
+				rf.mu.Unlock()
 			}
 		}(snap.peers[i])
 	}
-	wg.Wait()
 }
 
 func (rf *Raft) heartbeatTicker(term int) {

@@ -113,16 +113,25 @@ type Raft struct {
 	applyCh       chan ApplyMsg //将 applyMsg 通过构造 Peer 时传进来的 channel 返回给应用层，即上层模块（如kv数据库）与当前的raft层的联系
 	snapAppending bool
 
-	LeaderIP string
-	//restartProtected bool       // 重启保护标志
-	restartTime time.Time // 重启时间
+	LeaderIP    string
+	restartTime time.Time
 
-	// ===== 新增：Lease Read 相关字段 =====
-	lastHeartbeatTime time.Time     // Leader 上次发送心跳的时间
-	leaseExpiration   time.Time     // 当前租约的过期时间
-	leaseReadIndex    int           // 租约读取时的 commitIndex
-	leaseDuration     time.Duration // 租约持续时间，例如 200ms
-	enableLeaseRead   bool          // 是否启用 Lease Read（默认 true）
+	lastHeartbeatTime time.Time
+	leaseExpiration   time.Time
+	leaseReadIndex    int
+	leaseDuration     time.Duration
+	enableLeaseRead   bool
+
+	pipelineReplicator *PipelineReplicator
+
+	leaseState atomic.Value
+}
+
+type LeaseState struct {
+	IsLeader        bool
+	LeaseValid      bool
+	ReadIndex       int
+	LeaseExpiration time.Time
 }
 
 // 性能统计数据结构
@@ -135,50 +144,65 @@ type PerformanceStats struct {
 	MeasurementDuration string  `json:"measurement_duration"`
 }
 
-// CanServeLeaseRead 判断当前节点（必须是 Leader）是否可以安全地执行 Lease Read
-// 即当前是否处于 Lease 有效期内，可线性一致读本地状态机
 func (rf *Raft) IsLeaseValid() bool {
-	rf.mu.RLock()
-	defer rf.mu.RUnlock()
-
-	now := time.Now()
-	return now.Before(rf.leaseExpiration)
+	state := rf.getLeaseState()
+	if state == nil {
+		return false
+	}
+	return state.IsLeader && time.Now().Before(state.LeaseExpiration)
 }
 
-// 重置租约（不再是 leader 时调用）
+func (rf *Raft) getLeaseState() *LeaseState {
+	v := rf.leaseState.Load()
+	if v == nil {
+		return nil
+	}
+	return v.(*LeaseState)
+}
+
 func (rf *Raft) resetLease() {
-
-	rf.leaseExpiration = time.Time{} // 零值表示租约无效
+	rf.leaseExpiration = time.Time{}
+	rf.leaseState.Store(&LeaseState{
+		IsLeader:        false,
+		LeaseValid:      false,
+		ReadIndex:       0,
+		LeaseExpiration: time.Time{},
+	})
 }
 
-// 获取租约读取的 commitIndex
 func (rf *Raft) GetLeaseReadIndex() int {
-	rf.mu.RLock()
-	defer rf.mu.RUnlock()
-	return rf.leaseReadIndex
+	state := rf.getLeaseState()
+	if state == nil {
+		return 0
+	}
+	return state.ReadIndex
 }
 
-// 更新租约
 func (rf *Raft) updateLease() {
 	now := time.Now()
 	rf.lastHeartbeatTime = now
 	rf.leaseExpiration = now.Add(rf.leaseDuration)
-
 	rf.leaseReadIndex = rf.commitIndex
 
+	rf.leaseState.Store(&LeaseState{
+		IsLeader:        true,
+		LeaseValid:      true,
+		ReadIndex:       rf.commitIndex,
+		LeaseExpiration: rf.leaseExpiration,
+	})
 }
 
-// Lease Read 方法 - 等待状态机应用到指定索引
 func (rf *Raft) WaitForApplied(index int) bool {
-	timeout := time.After(100 * time.Millisecond) // 等待超时
+	timeout := time.After(100 * time.Millisecond)
 
 	for {
 		rf.mu.Lock()
-		if rf.lastApplied >= index {
-			rf.mu.Unlock()
+		applied := rf.lastApplied
+		rf.mu.Unlock()
+
+		if applied >= index {
 			return true
 		}
-		rf.mu.Unlock()
 
 		select {
 		case <-time.After(1 * time.Millisecond):
@@ -188,6 +212,7 @@ func (rf *Raft) WaitForApplied(index int) bool {
 		}
 	}
 }
+
 func (rf *Raft) GetPeerLen() int {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -216,23 +241,28 @@ func (rf *Raft) GetRaftStateSize() int {
 
 // 将调用此函数的节点转换状态成为follower，任期更改为传入参数term
 func (rf *Raft) becomeFollowerLocked(term int) {
-	if rf.currentTerm > term { //如果当前任期大于term，说明我还不能成为follower，因为我的任期比较大
+	if rf.currentTerm > term {
 		LOG(rf.me, rf.currentTerm, DError, "Can not be a Follower,lower term:T%d", term)
 		return
 	}
 
 	LOG(rf.me, rf.currentTerm, DVote, "%s -> Follower,For T%v->T%v", rf.role, rf.currentTerm, term)
-	rf.role = Follower // 否则我的任期不大于term，那我成为follower
+	rf.role = Follower
 	shouldPersist := rf.currentTerm != term
-	if rf.currentTerm < term { // 如果是小于term
-		rf.votedFor = -1 // 初始化我的票数为-1，表示我有选票还没投
+	if rf.currentTerm < term {
+		rf.votedFor = -1
 	}
-	rf.currentTerm = term // 将我当前的任期改为你的任期
+	rf.currentTerm = term
 	if shouldPersist {
 		rf.persistLocked()
 	}
-	rf.resetLease() // 重置租约
+	rf.resetLease()
 	rf.resetElectionTimerLocked()
+
+	if rf.pipelineReplicator != nil {
+		rf.pipelineReplicator.Stop()
+		rf.pipelineReplicator = nil
+	}
 }
 
 // 将调用此函数的节点转换状态成为candidate
@@ -260,29 +290,32 @@ func (rf *Raft) becomeLeaderLocked() {
 		LOG(rf.me, rf.currentTerm, DError, "Only Candidate can be a Leader")
 		return
 	}
-	// 成为leader后需初始化nextIndex和matchIndex
 	LOG(rf.me, rf.currentTerm, DVote, "%s->Leader,For T%d", rf.role, rf.currentTerm)
-	rf.role = Leader //成为leader
+	rf.role = Leader
 	for peer := 0; peer < len(rf.peers); peer++ {
-		rf.nextIndex[peer] = rf.log.size() // 初始化为日志长度，有效索引其实是 0 - (len -1),所以下一个是len
-		rf.matchIndex[peer] = 0            //先初始化为0
+		rf.nextIndex[peer] = rf.log.size()
+		rf.matchIndex[peer] = 0
 	}
-	// 启动独立的心跳协程
 	rf.updateLease()
 	go rf.heartbeatTicker(rf.currentTerm)
-	go rf.unifiedReplicator(rf.currentTerm)
+
+	if rf.pipelineReplicator != nil {
+		rf.pipelineReplicator.Stop()
+	}
+	rf.pipelineReplicator = NewPipelineReplicator(rf, rf.currentTerm)
+	rf.pipelineReplicator.Start()
+	LOG(rf.me, rf.currentTerm, DLeader, "Pipeline replicator started for term %d", rf.currentTerm)
 }
 
-// return currentTerm and whether this server
-// believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
-	// var term int
-	// var isleader bool
-	// Your code here (PartA).
 	rf.mu.RLock()
 	defer rf.mu.RUnlock()
 	return rf.currentTerm, rf.role == Leader
+}
+
+func (rf *Raft) IsLeader() bool {
+	state := rf.getLeaseState()
+	return state != nil && state.IsLeader
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -374,14 +407,18 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 	rf.currentTerm = 1
 	rf.votedFor = -1
 
-	// ===== 初始化 Lease Read 相关字段 =====
-	rf.leaseDuration = 400 * time.Millisecond // 可调，应小于 MinElectionTimeout(500ms)，刷新间隔80ms时留5倍余量
-	rf.lastHeartbeatTime = time.Now()         // 初始化为当前时间
+	rf.leaseDuration = 400 * time.Millisecond
+	rf.lastHeartbeatTime = time.Now()
 	rf.leaseExpiration = rf.lastHeartbeatTime.Add(rf.leaseDuration)
-	rf.enableLeaseRead = true // 默认开启 Lease Read
+	rf.enableLeaseRead = true
 
-	// log初始化为空，类似于一个空的头节点，避免边界的检查
-	//rf.log.append(LogEntry{Term:InvalidTerm})
+	rf.leaseState.Store(&LeaseState{
+		IsLeader:        false,
+		LeaseValid:      false,
+		ReadIndex:       0,
+		LeaseExpiration: time.Time{},
+	})
+
 	rf.log = NewLog(InvalidIndex, InvalidTerm, nil, nil)
 
 	rf.nextIndex = make([]int, len(rf.peers))
@@ -410,7 +447,12 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 			grpc.MaxSendMsgSize(10*1024*1024),
 			grpc.InitialWindowSize(2*1024*1024),
 			grpc.InitialConnWindowSize(4*1024*1024),
-			grpc.NumStreamWorkers(4),
+			grpc.NumStreamWorkers(8),
+			grpc.MaxConcurrentStreams(1000),
+			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+				MinTime:             5 * time.Second,
+				PermitWithoutStream: true,
+			}),
 		)
 		RegisterRaftGrpcServer(
 			grpcServer,
@@ -456,8 +498,8 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 		rf.peers[i] = NewRaftGrpcClient(conn)
 	}
 
-	go rf.electionticker() // 每创建一个raft就可以一直循环触发选举操作
-	go rf.applyTicker()    // 每创建一个raft就启动日志复制的操作，在里面有cond等待唤醒
+	go rf.electionticker()
+	go rf.applyTicker()
 
 	return rf
 }

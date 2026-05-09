@@ -338,27 +338,27 @@ func (kv *KVServer) applyTask() {
 	}
 }
 
-func (kv *KVServer) applyToStateMachineBatch(ops []raft.Op) []*OpReply {
-	replies := make([]*OpReply, len(ops))
+// func (kv *KVServer) applyToStateMachineBatch(ops []raft.Op) []*OpReply {
+// 	replies := make([]*OpReply, len(ops))
 
-	batchOps := bridge.ConvertOpsToBatch(ops)
-	results := bridge.BatchApply(batchOps)
+// 	batchOps := bridge.ConvertOpsToBatch(ops)
+// 	results := bridge.BatchApply(batchOps)
 
-	for i, result := range results {
-		replies[i] = &OpReply{
-			Value: result.Value,
-			Err:   "OK",
-		}
-		if !result.Success {
-			replies[i].Err = result.ErrMsg
-			if replies[i].Err == "" {
-				replies[i].Err = "FAILED"
-			}
-		}
-	}
+// 	for i, result := range results {
+// 		replies[i] = &OpReply{
+// 			Value: result.Value,
+// 			Err:   "OK",
+// 		}
+// 		if !result.Success {
+// 			replies[i].Err = result.ErrMsg
+// 			if replies[i].Err == "" {
+// 				replies[i].Err = "FAILED"
+// 			}
+// 		}
+// 	}
 
-	return replies
-}
+// 	return replies
+// }
 
 // 同时写入读取map即并发的读写map的时候会出现错误
 func (kv *KVServer) GetNotifyChannel(index int) chan []*OpReply {
