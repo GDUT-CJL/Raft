@@ -153,20 +153,20 @@ func (pp *peerPipeline) sendAndProcess(entry *pipelineEntry, term int) {
 }
 
 type PipelineReplicator struct {
-	rf       *Raft
-	term     int
+	rf        *Raft
+	term      int
 	pipelines []*peerPipeline
-	stopCh   chan struct{}
-	running  int32
+	stopCh    chan struct{}
+	running   int32
 }
 
 func NewPipelineReplicator(rf *Raft, term int) *PipelineReplicator {
 	pr := &PipelineReplicator{
-		rf:       rf,
-		term:     term,
+		rf:        rf,
+		term:      term,
 		pipelines: make([]*peerPipeline, len(rf.peers)),
-		stopCh:   make(chan struct{}),
-		running:  0,
+		stopCh:    make(chan struct{}),
+		running:   0,
 	}
 
 	for i := range pr.pipelines {
