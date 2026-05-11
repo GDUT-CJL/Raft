@@ -205,11 +205,19 @@ func (pr *PipelineReplicator) replicationLoop() {
 
 func (pr *PipelineReplicator) trySendEntries() {
 	pr.rf.mu.Lock()
-	defer pr.rf.mu.Unlock()
 
 	if pr.rf.contextLostLocked(Leader, pr.term) {
+		pr.rf.mu.Unlock()
 		return
 	}
+
+	type sendTask struct {
+		peer     int
+		args     *AppendEntriesArgs
+		pipeline *peerPipeline
+	}
+
+	tasks := make([]sendTask, 0, len(pr.pipelines))
 
 	for peer, pipeline := range pr.pipelines {
 		if pipeline == nil || !pipeline.canSend() {
@@ -244,14 +252,24 @@ func (pr *PipelineReplicator) trySendEntries() {
 			LeaderIP:     pr.rf.LeaderIP,
 		}
 
+		tasks = append(tasks, sendTask{
+			peer:     peer,
+			args:     args,
+			pipeline: pipeline,
+		})
+	}
+
+	pr.rf.mu.Unlock()
+
+	for _, task := range tasks {
 		entry := &pipelineEntry{
-			index:     prevIndex + len(entries),
+			index:     task.args.PrevLogIndex + len(task.args.Entries),
 			term:      pr.term,
-			args:      args,
+			args:      task.args,
 			timestamp: time.Now(),
 		}
 
-		pipeline.addInflight(entry)
+		task.pipeline.addInflight(entry)
 	}
 }
 

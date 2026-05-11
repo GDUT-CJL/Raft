@@ -206,7 +206,7 @@ func (kv *KVServer) applyTask() {
 		case message := <-kv.applyCh:
 			if message.CommandValid {
 				if time.Since(lastPrintTime) > 5*time.Second {
-					kv.printResourceUsage()
+					//kv.printResourceUsage()
 					lastPrintTime = time.Now()
 				}
 
