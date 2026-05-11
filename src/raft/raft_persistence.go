@@ -6,6 +6,26 @@ import (
 	"time"
 )
 
+// preparePersistData 准备持久化数据 用于AppendEntriesRPC提前释放锁持久化
+func (rf *Raft) preparePersistData() ([]byte, []byte) {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	rf.log.persisted(e)
+	raftstate := w.Bytes()
+
+	snapshot := make([]byte, len(rf.log.snapshot))
+	copy(snapshot, rf.log.snapshot)
+
+	return raftstate, snapshot
+}
+
+// persistDirect 直接持久化数据 用于AppendEntriesRPC提前释放锁持久化
+func (rf *Raft) persistDirect(raftstate, snapshot []byte) {
+	rf.persister.Save(raftstate, snapshot)
+}
+
 func (rf *Raft) persistLocked() {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)

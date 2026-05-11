@@ -43,7 +43,6 @@ func (pp *peerPipeline) start(term int) {
 	if !atomic.CompareAndSwapInt32(&pp.running, 0, 1) {
 		return
 	}
-	go pp.pipelineWorker(term)
 }
 
 func (pp *peerPipeline) stop() {
@@ -62,6 +61,8 @@ func (pp *peerPipeline) addInflight(entry *pipelineEntry) {
 	defer pp.cond.L.Unlock()
 	pp.inflight = append(pp.inflight, entry)
 	pp.cond.Signal()
+
+	go pp.sendAndProcess(entry, entry.term)
 }
 
 func (pp *peerPipeline) removeInflight(index int) {
@@ -80,23 +81,6 @@ func (pp *peerPipeline) getInflightCount() int {
 	pp.cond.L.Lock()
 	defer pp.cond.L.Unlock()
 	return len(pp.inflight)
-}
-
-func (pp *peerPipeline) pipelineWorker(term int) {
-	for atomic.LoadInt32(&pp.running) == 1 {
-		pp.cond.L.Lock()
-		for len(pp.inflight) == 0 && atomic.LoadInt32(&pp.running) == 1 {
-			pp.cond.Wait()
-		}
-		if atomic.LoadInt32(&pp.running) == 0 {
-			pp.cond.L.Unlock()
-			return
-		}
-		entry := pp.inflight[0]
-		pp.cond.L.Unlock()
-
-		pp.sendAndProcess(entry, term)
-	}
 }
 
 func (pp *peerPipeline) sendAndProcess(entry *pipelineEntry, term int) {
