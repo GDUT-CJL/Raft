@@ -41,7 +41,7 @@ const (
 	MinElectionTimeout time.Duration = 500 * time.Millisecond
 	MaxElectionTimeout time.Duration = 1500 * time.Millisecond
 
-	replicateInterval time.Duration = 80 * time.Millisecond
+	replicateInterval time.Duration = 60 * time.Millisecond
 )
 
 const (
