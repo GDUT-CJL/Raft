@@ -44,7 +44,6 @@ type KVServer struct {
 	// 添加快照相关的字段
 	persister *raft.Persister
 
-	stateMachineMu sync.RWMutex
 	snapshotCond   *sync.Cond     // 用于快照制作的同步
 	snapshotQueue  []snapshotTask // 快照任务队列
 }
@@ -242,10 +241,7 @@ func (kv *KVServer) applyTask() {
 
 				if len(operations) > 0 {
 					batchOps := bridge.ConvertOpsToBatch(operations)
-
-					kv.stateMachineMu.Lock()
 					results := bridge.BatchApply(batchOps)
-					kv.stateMachineMu.Unlock()
 
 					for i, result := range results {
 						reply := &OpReply{

@@ -28,19 +28,54 @@ type BatchResult struct {
 	ErrMsg  string
 }
 
-var batchLock sync.Mutex
+const (
+	StorageArray    = 0
+	StorageHash     = 1
+	StorageRBTree   = 2
+	StorageBTree    = 3
+	StorageSkiplist = 4
+	StorageRocksDB  = 5
+	StorageCount    = 6
+)
+
+var storageLocks [StorageCount]sync.Mutex
 
 func BatchApply(ops []BatchOperation) []BatchResult {
 	if len(ops) == 0 {
 		return nil
 	}
 
-	batchLock.Lock()
-	defer batchLock.Unlock()
+	groups := make(map[int][]int)
+	for i, op := range ops {
+		st := op.StorageType
+		if st < 0 || st >= StorageCount {
+			st = 0
+		}
+		groups[st] = append(groups[st], i)
+	}
 
-	cOps := make([]C.BatchOperation, len(ops))
-	cKeys := make([]*C.char, len(ops))
-	cValues := make([]*C.char, len(ops))
+	results := make([]BatchResult, len(ops))
+
+	var wg sync.WaitGroup
+	for st, indices := range groups {
+		wg.Add(1)
+		go func(storageType int, idxList []int) {
+			defer wg.Done()
+			batchApplyByStorageType(storageType, ops, idxList, results)
+		}(st, indices)
+	}
+	wg.Wait()
+
+	return results
+}
+
+func batchApplyByStorageType(storageType int, ops []BatchOperation, indices []int, results []BatchResult) {
+	storageLocks[storageType].Lock()
+	defer storageLocks[storageType].Unlock()
+
+	cOps := make([]C.BatchOperation, len(indices))
+	cKeys := make([]*C.char, len(indices))
+	cValues := make([]*C.char, len(indices))
 
 	defer func() {
 		for i := range cKeys {
@@ -51,39 +86,41 @@ func BatchApply(ops []BatchOperation) []BatchResult {
 		}
 	}()
 
-	for i, op := range ops {
-		cKeys[i] = C.CString(op.Key)
-		cValues[i] = C.CString(op.Value)
+	for j, idx := range indices {
+		op := ops[idx]
+		cKeys[j] = C.CString(op.Key)
+		cValues[j] = C.CString(op.Value)
 
-		cOps[i] = C.BatchOperation{
+		cOps[j] = C.BatchOperation{
 			op_type:      C.BatchOpType(op.OpType),
 			storage_type: C.int(op.StorageType),
-			key:          cKeys[i],
+			key:          cKeys[j],
 			klen:         C.size_t(op.Klen),
-			value:        cValues[i],
+			value:        cValues[j],
 			vlen:         C.size_t(op.Vlen),
 		}
 	}
 
-	cResults := make([]C.BatchResult, len(ops))
+	cResults := make([]C.BatchResult, len(indices))
 
-	ret := C.batch_apply(&cOps[0], C.int(len(ops)), &cResults[0])
+	ret := C.batch_apply(&cOps[0], C.int(len(indices)), &cResults[0])
 	if ret != 0 {
-		return nil
+		for _, idx := range indices {
+			results[idx] = BatchResult{Success: false, ErrMsg: "batch_apply failed"}
+		}
+		return
 	}
 
-	results := make([]BatchResult, len(ops))
-	for i, cResult := range cResults {
-		results[i] = BatchResult{
+	for j, cResult := range cResults {
+		idx := indices[j]
+		results[idx] = BatchResult{
 			Success: cResult.success != 0,
 			Value:   int(cResult.value),
 		}
 		if cResult.err_msg != nil {
-			results[i].ErrMsg = C.GoString(cResult.err_msg)
+			results[idx].ErrMsg = C.GoString(cResult.err_msg)
 		}
 	}
-
-	return results
 }
 
 func ConvertOpsToBatch(raftOps []raft.Op) []BatchOperation {

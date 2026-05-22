@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"unsafe"
 )
@@ -34,18 +33,6 @@ func goLogCallback(message *C.char, level C.int) {
 		log.Printf("[STORAGE-ERROR] %s", msg)
 	}
 }
-
-// 为每个数据结构定义独立的读写锁
-// 这里加锁最好是在C层加锁，性能更高
-// 为了方便这里在go层加锁
-var (
-	arrayLock    sync.RWMutex
-	hashLock     sync.RWMutex
-	rbTreeLock   sync.RWMutex
-	bTreeLock    sync.RWMutex
-	skiplistLock sync.RWMutex
-	rocksdbLock  sync.RWMutex
-)
 
 // 创建存储引擎快照
 func Storage_Snapshot() []byte {
