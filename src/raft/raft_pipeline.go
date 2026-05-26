@@ -102,7 +102,12 @@ func (pp *peerPipeline) sendAndProcess(entry *pipelineEntry, term int) {
 	}
 
 	if reply.Term > pp.rf.currentTerm {
-		pp.rf.becomeFollowerLocked(reply.Term)
+		raftstate := pp.rf.becomeFollowerLocked(reply.Term)
+		if raftstate != nil {
+			pp.rf.mu.Unlock()
+			pp.rf.persistDirect(raftstate)
+			pp.rf.mu.Lock()
+		}
 		return
 	}
 
@@ -226,12 +231,20 @@ func (pr *PipelineReplicator) trySendEntries() {
 
 		prevIndex := pr.rf.nextIndex[peer] - 1
 		if prevIndex < pr.rf.log.snapLastIdx {
+			// 如果已经在发送快照，跳过，避免重复发送
+			if pr.rf.snapSending[peer] {
+				continue
+			}
+			pr.rf.snapSending[peer] = true
+			// 必须在锁内拷贝快照数据，避免释放锁后 goroutine 访问被修改的数据
+			snapshotCopy := make([]byte, len(pr.rf.log.snapshot))
+			copy(snapshotCopy, pr.rf.log.snapshot)
 			go pr.rf.InstallToPeer(peer, pr.term, &InstallSnapshotArgs{
 				Term:              pr.rf.currentTerm,
 				LeaderId:          pr.rf.me,
 				LastIncludedIndex: pr.rf.log.snapLastIdx,
 				LastIncludedTerm:  pr.rf.log.snapLastTerm,
-				Snapshot:          pr.rf.log.snapshot,
+				Snapshot:          snapshotCopy,
 			})
 			continue
 		}

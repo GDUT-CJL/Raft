@@ -32,20 +32,17 @@ func (rf *Raft) sendHeartbeat(server int, term int) {
 		rf.mu.Unlock()
 		return
 	}
+	// 心跳永远只发空 AppendEntries，不发送快照
+	// 快照由 replicator 独立发送，避免快照数据阻塞心跳路径
 	prevIndex := rf.nextIndex[server] - 1
+	var prevTerm int
 	if prevIndex < rf.log.snapLastIdx {
-		args := &InstallSnapshotArgs{
-			Term:              rf.currentTerm,
-			LeaderId:          rf.me,
-			LastIncludedIndex: rf.log.snapLastIdx,
-			LastIncludedTerm:  rf.log.snapLastTerm,
-			Snapshot:          rf.log.snapshot,
-		}
-		rf.mu.Unlock()
-		go rf.InstallToPeer(server, term, args)
-		return
+		// peer 需要快照，但心跳不发送，用 snapLastIdx 作为 PrevLogIndex
+		prevIndex = rf.log.snapLastIdx
+		prevTerm = rf.log.snapLastTerm
+	} else {
+		prevTerm = rf.log.at(prevIndex).Term
 	}
-	prevTerm := rf.log.at(prevIndex).Term
 	args := &AppendEntriesArgs{
 		Term:         term,
 		LeaderId:     rf.me,
@@ -65,8 +62,11 @@ func (rf *Raft) sendHeartbeat(server int, term int) {
 
 	rf.mu.Lock()
 	if reply.Term > rf.currentTerm {
-		rf.becomeFollowerLocked(reply.Term)
+		raftstate := rf.becomeFollowerLocked(reply.Term)
 		rf.mu.Unlock()
+		if raftstate != nil {
+			rf.persistDirect(raftstate)
+		}
 		return
 	}
 	if reply.Success {
@@ -77,9 +77,9 @@ func (rf *Raft) sendHeartbeat(server int, term int) {
 
 func (rf *Raft) takeHeartbeatSnapshot(term int) *heartbeatSnapshot {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	if rf.contextLostLocked(Leader, term) {
+		rf.mu.Unlock()
 		return nil
 	}
 
@@ -92,31 +92,29 @@ func (rf *Raft) takeHeartbeatSnapshot(term int) *heartbeatSnapshot {
 
 	peerCount := len(rf.peers)
 	snap.peers = make([]peerHeartbeatData, 0, peerCount)
+
 	for peer := 0; peer < peerCount; peer++ {
 		if peer == rf.me {
 			continue
 		}
 		prevIndex := rf.nextIndex[peer] - 1
+		var prevTerm int
 		if prevIndex < rf.log.snapLastIdx {
-			snapshotCopy := make([]byte, len(rf.log.snapshot))
-			copy(snapshotCopy, rf.log.snapshot)
-			snap.peers = append(snap.peers, peerHeartbeatData{
-				peer:         peer,
-				snapLastIdx:  rf.log.snapLastIdx,
-				snapLastTerm: rf.log.snapLastTerm,
-				snapshot:     snapshotCopy,
-				isSnapshot:   true,
-			})
+			// peer 需要快照，但心跳不发送快照，用 snapLastIdx 作为 PrevLogIndex
+			prevIndex = rf.log.snapLastIdx
+			prevTerm = rf.log.snapLastTerm
 		} else {
-			snap.peers = append(snap.peers, peerHeartbeatData{
-				peer:         peer,
-				prevLogIndex: prevIndex,
-				prevLogTerm:  rf.log.at(prevIndex).Term,
-				snapLastIdx:  rf.log.snapLastIdx,
-				isSnapshot:   false,
-			})
+			prevTerm = rf.log.at(prevIndex).Term
 		}
+		snap.peers = append(snap.peers, peerHeartbeatData{
+			peer:         peer,
+			prevLogIndex: prevIndex,
+			prevLogTerm:  prevTerm,
+			isSnapshot:   false,
+		})
 	}
+	rf.mu.Unlock()
+
 	return snap
 }
 
@@ -127,42 +125,35 @@ func (rf *Raft) sendHeartbeatFromSnapshot(snap *heartbeatSnapshot, term int) {
 
 	for i := range snap.peers {
 		go func(data peerHeartbeatData) {
-			if data.isSnapshot {
-				args := &InstallSnapshotArgs{
-					Term:              snap.term,
-					LeaderId:          snap.leaderId,
-					LastIncludedIndex: data.snapLastIdx,
-					LastIncludedTerm:  data.snapLastTerm,
-					Snapshot:          data.snapshot,
-				}
-				rf.InstallToPeer(data.peer, term, args)
-			} else {
-				args := &AppendEntriesArgs{
-					Term:         snap.term,
-					LeaderId:     snap.leaderId,
-					PrevLogIndex: data.prevLogIndex,
-					PrevLogTerm:  data.prevLogTerm,
-					Entries:      nil,
-					LeaderCommit: snap.commitIndex,
-					LeaderIP:     snap.leaderIP,
-				}
-				reply := &AppendEntriesReply{}
-				ok := rf.sendAppendEntries(data.peer, args, reply)
-				if !ok {
-					return
-				}
-
-				rf.mu.Lock()
-				if reply.Term > rf.currentTerm {
-					rf.becomeFollowerLocked(reply.Term)
-					rf.mu.Unlock()
-					return
-				}
-				if reply.Success {
-					rf.updateLease()
-				}
-				rf.mu.Unlock()
+			// 心跳只发 AppendEntries，不发送 InstallSnapshot
+			args := &AppendEntriesArgs{
+				Term:         snap.term,
+				LeaderId:     snap.leaderId,
+				PrevLogIndex: data.prevLogIndex,
+				PrevLogTerm:  data.prevLogTerm,
+				Entries:      nil,
+				LeaderCommit: snap.commitIndex,
+				LeaderIP:     snap.leaderIP,
 			}
+			reply := &AppendEntriesReply{}
+			ok := rf.sendAppendEntries(data.peer, args, reply)
+			if !ok {
+				return
+			}
+
+			rf.mu.Lock()
+			if reply.Term > rf.currentTerm {
+				raftstate := rf.becomeFollowerLocked(reply.Term)
+				rf.mu.Unlock()
+				if raftstate != nil {
+					rf.persistDirect(raftstate)
+				}
+				return
+			}
+			if reply.Success {
+				rf.updateLease()
+			}
+			rf.mu.Unlock()
 		}(snap.peers[i])
 	}
 }
@@ -179,23 +170,5 @@ func (rf *Raft) heartbeatTicker(term int) {
 			return
 		}
 		rf.sendHeartbeatFromSnapshot(snap, term)
-	}
-}
-
-func (rf *Raft) unifiedReplicator(term int) {
-	ticker := time.NewTicker(replicateInterval)
-	defer ticker.Stop()
-
-	for !rf.killed() {
-		<-ticker.C
-
-		rf.mu.Lock()
-		if rf.contextLostLocked(Leader, term) {
-			rf.mu.Unlock()
-			return
-		}
-		rf.mu.Unlock()
-
-		rf.startReplication(term)
 	}
 }

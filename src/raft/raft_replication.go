@@ -66,7 +66,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if args.Term >= rf.currentTerm {
-		rf.becomeFollowerLocked(args.Term)
+		raftstate := rf.becomeFollowerLocked(args.Term)
+		if raftstate != nil {
+			rf.mu.Unlock()
+			rf.persistDirect(raftstate)
+			rf.mu.Lock()
+		}
 	}
 
 	rf.resetElectionTimerLocked()
@@ -102,7 +107,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.log.appendFrom(prevLogIndex, entries)
 
-	raftstate, snapshot := rf.preparePersistData()
+	raftstate := rf.preparePersistData()
 
 	needSignal := false
 	if leaderCommit > rf.commitIndex {
@@ -119,7 +124,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Unlock()
 
 	// 同步持久化 占用RPC的时间
-	rf.persistDirect(raftstate, snapshot)
+	rf.persistDirect(raftstate)
 
 	reply.Success = true
 	LOG(rf.me, rf.currentTerm, DPersist, "Follower persist completed for logs: (%d, %d]", prevLogIndex, prevLogIndex+len(entries))
@@ -271,12 +276,20 @@ func (rf *Raft) startReplication(term int) bool {
 
 		prevIndex := rf.nextIndex[peer] - 1
 		if prevIndex < rf.log.snapLastIdx {
+			// 如果已经在发送快照，跳过，避免重复发送
+			if rf.snapSending[peer] {
+				continue
+			}
+			rf.snapSending[peer] = true
+			// 必须在锁内拷贝快照数据，因为释放锁后 goroutine 可能访问到被修改的数据
+			snapshotCopy := make([]byte, len(rf.log.snapshot))
+			copy(snapshotCopy, rf.log.snapshot)
 			args := &InstallSnapshotArgs{
 				Term:              rf.currentTerm,
 				LeaderId:          rf.me,
 				LastIncludedIndex: rf.log.snapLastIdx,
 				LastIncludedTerm:  rf.log.snapLastTerm,
-				Snapshot:          rf.log.snapshot,
+				Snapshot:          snapshotCopy,
 			}
 			tasks = append(tasks, replicationTask{
 				peer:         peer,
@@ -327,7 +340,12 @@ func (rf *Raft) processReplicationReply(peer int, args *AppendEntriesArgs, term 
 	defer rf.mu.Unlock()
 
 	if reply.Term > rf.currentTerm {
-		rf.becomeFollowerLocked(reply.Term)
+		raftstate := rf.becomeFollowerLocked(reply.Term)
+		if raftstate != nil {
+			rf.mu.Unlock()
+			rf.persistDirect(raftstate)
+			rf.mu.Lock()
+		}
 		return
 	}
 	if rf.contextLostLocked(Leader, term) {

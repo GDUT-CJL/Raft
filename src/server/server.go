@@ -46,6 +46,7 @@ type KVServer struct {
 
 	snapshotCond   *sync.Cond     // 用于快照制作的同步
 	snapshotQueue  []snapshotTask // 快照任务队列
+	lastSnapshot   time.Time      // 上次快照时间，用于冷却
 }
 
 type snapshotTask struct {
@@ -152,6 +153,11 @@ func (kv *KVServer) makeSnapshotAsync(index int, clientSeqTable map[int64]LastOp
 
 	snapshot := w.Bytes()
 	kv.rf.Snapshot(index, snapshot)
+
+	// 更新快照时间（冷却计时）
+	kv.mu.Lock()
+	kv.lastSnapshot = time.Now()
+	kv.mu.Unlock()
 }
 
 // 异步制作快照
@@ -203,6 +209,16 @@ func (kv *KVServer) applyTask() {
 	for !kv.killed() {
 		select {
 		case message := <-kv.applyCh:
+			if message.SnapshotValid {
+				// Follower 收到 InstallSnapshot 后需要恢复状态机
+				kv.mu.Lock()
+				kv.restoreFromSnapshot(message.Snapshot)
+				if message.SnapshotIndex > kv.lastApplied {
+					kv.lastApplied = message.SnapshotIndex
+				}
+				kv.mu.Unlock()
+				continue
+			}
 			if message.CommandValid {
 				if time.Since(lastPrintTime) > 5*time.Second {
 					//kv.printResourceUsage()
@@ -232,7 +248,10 @@ func (kv *KVServer) applyTask() {
 
 				snapshotNeeded := false
 				if kv.maxraftstate != -1 && kv.rf.GetRaftStateSize() >= kv.maxraftstate {
-					snapshotNeeded = true
+					// 冷却机制：距离上次快照至少 2 秒，避免频繁触发
+					if time.Since(kv.lastSnapshot) >= 2*time.Second {
+						snapshotNeeded = true
+					}
 				}
 
 				kv.mu.Unlock()

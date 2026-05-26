@@ -41,7 +41,7 @@ const (
 	MinElectionTimeout time.Duration = 500 * time.Millisecond
 	MaxElectionTimeout time.Duration = 1500 * time.Millisecond
 
-	replicateInterval time.Duration = 60 * time.Millisecond
+	replicateInterval time.Duration = 80 * time.Millisecond
 )
 
 const (
@@ -106,6 +106,7 @@ type Raft struct {
 	// Leader 正是依据此视图来决定给各个 Peer 发送多少日志。也是依据此视图，Leader 可以计算全局的 `commitIndex`。
 	nextIndex  []int // 发送到该服务器的下一个日志号（初始值为领导人最后的日志号+1）
 	matchIndex []int // 记录了 Leader 已知的每个 follower 已经复制的最高日志索引（初始值为0）
+	snapSending []bool // 标记每个 peer 是否正在发送快照，防止重复发送
 
 	commitIndex   int           // 已知已提交的最高的日志条目的索引（初始值为0，单调递增）
 	lastApplied   int           // 已经被应用到状态机的最高的日志条目的索引（初始值为0，单调递增）
@@ -240,10 +241,11 @@ func (rf *Raft) GetRaftStateSize() int {
 }
 
 // 将调用此函数的节点转换状态成为follower，任期更改为传入参数term
-func (rf *Raft) becomeFollowerLocked(term int) {
+// 返回需要在锁外持久化的 raftstate 数据（如果不需要持久化则返回 nil）
+func (rf *Raft) becomeFollowerLocked(term int) []byte {
 	if rf.currentTerm > term {
 		LOG(rf.me, rf.currentTerm, DError, "Can not be a Follower,lower term:T%d", term)
-		return
+		return nil
 	}
 
 	LOG(rf.me, rf.currentTerm, DVote, "%s -> Follower,For T%v->T%v", rf.role, rf.currentTerm, term)
@@ -253,8 +255,9 @@ func (rf *Raft) becomeFollowerLocked(term int) {
 		rf.votedFor = -1
 	}
 	rf.currentTerm = term
+	var raftstate []byte
 	if shouldPersist {
-		rf.persistLocked()
+		raftstate = rf.preparePersistData()
 	}
 	rf.resetLease()
 	rf.resetElectionTimerLocked()
@@ -263,13 +266,15 @@ func (rf *Raft) becomeFollowerLocked(term int) {
 		rf.pipelineReplicator.Stop()
 		rf.pipelineReplicator = nil
 	}
+	return raftstate
 }
 
 // 将调用此函数的节点转换状态成为candidate
-func (rf *Raft) becomeCandidateLocked() {
+// 返回需要在锁外持久化的 raftstate 数据
+func (rf *Raft) becomeCandidateLocked() []byte {
 	if rf.role == Leader { // 如果我已经是leader我就无法变为candidate
 		LOG(rf.me, rf.currentTerm, DError, "Leader can not be a Candidate")
-		return
+		return nil
 	}
 
 	LOG(rf.me, rf.currentTerm, DVote, "%s->Candidate,For T%d", rf.role, rf.currentTerm+1)
@@ -280,8 +285,9 @@ func (rf *Raft) becomeCandidateLocked() {
 	// }
 	rf.role = Candidate
 	rf.votedFor = rf.me
-	rf.persistLocked()
+	raftstate := rf.preparePersistData()
 	rf.resetElectionTimerLocked() // 重置选举超时时间
+	return raftstate
 }
 
 // 将调用此函数的节点转换状态成为leader
@@ -295,6 +301,7 @@ func (rf *Raft) becomeLeaderLocked() {
 	for peer := 0; peer < len(rf.peers); peer++ {
 		rf.nextIndex[peer] = rf.log.size()
 		rf.matchIndex[peer] = 0
+		rf.snapSending[peer] = false
 	}
 	rf.updateLease()
 	go rf.heartbeatTicker(rf.currentTerm)
@@ -332,10 +339,10 @@ func (rf *Raft) IsLeader() bool {
 // the leader.
 func (rf *Raft) Start(command []Op) (int, int, bool) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	// 只有leader节点才能够操作日志，无论是set或者get等其他操作都必须是leader操作
 	if rf.role != Leader {
+		rf.mu.Unlock()
 		return 0, 0, false
 	}
 
@@ -345,10 +352,17 @@ func (rf *Raft) Start(command []Op) (int, int, bool) {
 		Term:         rf.currentTerm,
 	})
 
-	// Your code here (PartB).
 	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d", rf.log.size()-1, rf.currentTerm)
-	rf.persistLocked()
-	return rf.log.size() - 1, rf.currentTerm, true
+	// 在锁内序列化数据，释放锁后再做 IO（避免阻塞心跳）
+	raftstate := rf.preparePersistData()
+	index := rf.log.size() - 1
+	term := rf.currentTerm
+	rf.mu.Unlock()
+
+	// 在锁外持久化（WAL Append + 可能的 fsync，约 10ms）
+	rf.persistDirect(raftstate)
+
+	return index, term, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -423,6 +437,7 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
+	rf.snapSending = make([]bool, len(rf.peers))
 
 	rf.commitIndex = 0
 	rf.lastApplied = 0

@@ -7,23 +7,19 @@ import (
 )
 
 // preparePersistData 准备持久化数据 用于AppendEntriesRPC提前释放锁持久化
-func (rf *Raft) preparePersistData() ([]byte, []byte) {
+func (rf *Raft) preparePersistData() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	rf.log.persisted(e)
-	raftstate := w.Bytes()
-
-	snapshot := make([]byte, len(rf.log.snapshot))
-	copy(snapshot, rf.log.snapshot)
-
-	return raftstate, snapshot
+	return w.Bytes()
 }
 
-// persistDirect 直接持久化数据 用于AppendEntriesRPC提前释放锁持久化
-func (rf *Raft) persistDirect(raftstate, snapshot []byte) {
-	rf.persister.Save(raftstate, snapshot)
+// persistDirect 直接持久化数据（只写 WAL，不写快照文件）
+// 用于 Start/RequestVote 等在锁外持久化的场景
+func (rf *Raft) persistDirect(raftstate []byte) {
+	rf.persister.SaveRaftState(raftstate)
 }
 
 func (rf *Raft) persistLocked() {
@@ -34,11 +30,38 @@ func (rf *Raft) persistLocked() {
 	rf.log.persisted(e)
 	raftstate := w.Bytes()
 
-	rf.persister.Save(raftstate, rf.log.snapshot)
+	// 只写 WAL，不重复写快照文件（快照只在 Snapshot/InstallSnapshot 时写入）
+	rf.persister.SaveRaftState(raftstate)
+}
+
+// prepareCompactData 准备快照压缩所需的 Raft 状态数据（在锁内调用，不拷贝快照）
+// 快照数据由调用方直接传入，避免在锁内拷贝大块数据
+func (rf *Raft) prepareCompactData() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	rf.log.persisted(e)
+	return w.Bytes()
+}
+
+// persistAndCompact 快照后持久化并压缩 WAL
+// 快照后旧 WAL 中的历史记录不再需要，压缩为只包含最新状态的新 WAL
+func (rf *Raft) persistAndCompact() {
+	raftstate := rf.prepareCompactData()
+	snapshot := rf.persister.ReadSnapshot()
+	rf.persister.CompactWAL(raftstate, snapshot)
+}
+
+// persistAndCompactAsync 在锁外异步执行快照持久化和 WAL 压缩
+// 调用方在锁内调用 prepareCompactData() 获取 raftstate，释放锁后调用此方法
+// snapshot 由调用方在锁外传入（避免锁内拷贝大块数据）
+func (rf *Raft) persistAndCompactAsync(raftstate, snapshot []byte) {
+	rf.persister.CompactWAL(raftstate, snapshot)
 }
 
 func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 {
+	if len(data) < 1 {
 		return
 	}
 	r := bytes.NewBuffer(data)
