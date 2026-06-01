@@ -23,6 +23,11 @@ const (
 )
 
 const (
+	WALRecordMetadata   WALRecordType = 3
+	WALRecordLogReplace WALRecordType = 4
+)
+
+const (
 	walHeaderSize  = 4 + 1 + 4 // CRC + Type + DataLen = 9 bytes
 	walFileSuffix  = ".wal"
 	walMaxFileSize = 64 * 1024 * 1024 // 64MB

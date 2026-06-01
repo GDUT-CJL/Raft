@@ -22,6 +22,18 @@ func (rf *Raft) persistDirect(raftstate []byte) {
 	rf.persister.SaveRaftState(raftstate)
 }
 
+func (rf *Raft) persistMeta(currentTerm, votedFor int) {
+	rf.persister.SaveMeta(currentTerm, votedFor)
+}
+
+func (rf *Raft) persistLogReplace(prevIndex int, entries []LogEntry) {
+	rf.persister.SaveLogReplace(prevIndex, entries)
+}
+
+func (rf *Raft) persistMetaAndLog(currentTerm, votedFor, prevIndex int, entries []LogEntry) {
+	rf.persister.SaveMetaAndLog(currentTerm, votedFor, prevIndex, entries)
+}
+
 func (rf *Raft) persistLocked() {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)

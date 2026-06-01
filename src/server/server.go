@@ -40,6 +40,7 @@ type KVServer struct {
 	clientSeqTable map[int64]LastOperationInfo // 客户端最后处理的序列号,处理重复请求
 	notifyChans    map[int]chan []*OpReply
 	notifyMu       sync.RWMutex
+	snapshotInProgress bool
 	Counter        int64 // 原子计数器,用于测试
 	// 添加快照相关的字段
 	persister *raft.Persister
@@ -136,6 +137,9 @@ func (kv *KVServer) makeSnapshotAsync(index int, clientSeqTable map[int64]LastOp
 	stateMachineSnapshot := bridge.Storage_Snapshot()
 	if stateMachineSnapshot == nil {
 		fmt.Printf("KVServer[%d] failed to create storage snapshot\n", kv.me)
+		kv.mu.Lock()
+		kv.snapshotInProgress = false
+		kv.mu.Unlock()
 		return
 	}
 
@@ -144,10 +148,16 @@ func (kv *KVServer) makeSnapshotAsync(index int, clientSeqTable map[int64]LastOp
 
 	if e.Encode(clientSeqTable) != nil {
 		fmt.Printf("KVServer[%d] encode clientSeqTable failed\n", kv.me)
+		kv.mu.Lock()
+		kv.snapshotInProgress = false
+		kv.mu.Unlock()
 		return
 	}
 	if e.Encode(stateMachineSnapshot) != nil {
 		fmt.Printf("KVServer[%d] encode stateMachineSnapshot failed\n", kv.me)
+		kv.mu.Lock()
+		kv.snapshotInProgress = false
+		kv.mu.Unlock()
 		return
 	}
 
@@ -157,6 +167,7 @@ func (kv *KVServer) makeSnapshotAsync(index int, clientSeqTable map[int64]LastOp
 	// 更新快照时间（冷却计时）
 	kv.mu.Lock()
 	kv.lastSnapshot = time.Now()
+	kv.snapshotInProgress = false
 	kv.mu.Unlock()
 }
 
@@ -308,7 +319,7 @@ func (kv *KVServer) applyTask() {
 				kv.mu.Lock()
 				var clientSeqTableCopy map[int64]LastOperationInfo
 				if snapshotNeeded {
-					clientSeqTableCopy = make(map[int64]LastOperationInfo)
+					clientSeqTableCopy = make(map[int64]LastOperationInfo, len(kv.clientSeqTable))
 				}
 
 				for i, op := range operations {
@@ -318,13 +329,17 @@ func (kv *KVServer) applyTask() {
 							Reply: opReplies[i],
 						}
 						kv.clientSeqTable[op.ClientId] = info
-						if snapshotNeeded {
-							clientSeqTableCopy[op.ClientId] = info
-						}
 					}
 				}
 
 				if snapshotNeeded {
+					for clientID, info := range kv.clientSeqTable {
+						clientSeqTableCopy[clientID] = info
+					}
+				}
+
+				if snapshotNeeded && !kv.snapshotInProgress && len(kv.snapshotQueue) == 0 {
+					kv.snapshotInProgress = true
 					task := snapshotTask{
 						index:          message.CommandIndex,
 						clientSeqTable: clientSeqTableCopy,

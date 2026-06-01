@@ -64,8 +64,8 @@ func (rf *Raft) sendHeartbeat(server int, term int) {
 	if reply.Term > rf.currentTerm {
 		raftstate := rf.becomeFollowerLocked(reply.Term)
 		rf.mu.Unlock()
-		if raftstate != nil {
-			rf.persistDirect(raftstate)
+		if raftstate {
+			rf.persistMeta(rf.currentTerm, rf.votedFor)
 		}
 		return
 	}
@@ -145,8 +145,8 @@ func (rf *Raft) sendHeartbeatFromSnapshot(snap *heartbeatSnapshot, term int) {
 			if reply.Term > rf.currentTerm {
 				raftstate := rf.becomeFollowerLocked(reply.Term)
 				rf.mu.Unlock()
-				if raftstate != nil {
-					rf.persistDirect(raftstate)
+				if raftstate {
+					rf.persistMeta(rf.currentTerm, rf.votedFor)
 				}
 				return
 			}

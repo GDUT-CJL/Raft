@@ -7,7 +7,8 @@ import (
 )
 
 const (
-	maxInflight = 16
+	maxInflight            = 4
+	maxEntriesPerAppendRPC = 64
 )
 
 type pipelineEntry struct {
@@ -103,9 +104,9 @@ func (pp *peerPipeline) sendAndProcess(entry *pipelineEntry, term int) {
 
 	if reply.Term > pp.rf.currentTerm {
 		raftstate := pp.rf.becomeFollowerLocked(reply.Term)
-		if raftstate != nil {
+		if raftstate {
 			pp.rf.mu.Unlock()
-			pp.rf.persistDirect(raftstate)
+			pp.rf.persistMeta(pp.rf.currentTerm, pp.rf.votedFor)
 			pp.rf.mu.Lock()
 		}
 		return
@@ -253,6 +254,11 @@ func (pr *PipelineReplicator) trySendEntries() {
 		if len(entries) == 0 {
 			continue
 		}
+		if len(entries) > maxEntriesPerAppendRPC {
+			entries = entries[:maxEntriesPerAppendRPC]
+		}
+		entriesCopy := make([]LogEntry, len(entries))
+		copy(entriesCopy, entries)
 
 		prevTerm := pr.rf.log.at(prevIndex).Term
 		args := &AppendEntriesArgs{
@@ -260,7 +266,7 @@ func (pr *PipelineReplicator) trySendEntries() {
 			LeaderId:     pr.rf.me,
 			PrevLogIndex: prevIndex,
 			PrevLogTerm:  prevTerm,
-			Entries:      entries,
+			Entries:      entriesCopy,
 			LeaderCommit: pr.rf.commitIndex,
 			LeaderIP:     pr.rf.LeaderIP,
 		}

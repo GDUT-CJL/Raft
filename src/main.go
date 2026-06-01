@@ -34,7 +34,7 @@ func startNode(cfg config.NodeConfig, clusterConfigs []config.NodeConfig, nodeId
 		fmt.Printf("nodeId: %d, cfg.ID = %d\n", nodeId, cfg.ID)
 
 		// 启动rpc服务
-		kv = server.StartKVServer(rpcAddrs, cfg.ID, -1) // 日志超过1000条时触发快照
+		kv = server.StartKVServer(rpcAddrs, cfg.ID, -1) 
 
 		// 初始化批量管理器
 		bm := mnet.NewBatchManager(

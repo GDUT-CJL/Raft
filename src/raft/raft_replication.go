@@ -58,6 +58,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	LOG(rf.me, rf.currentTerm, DDebug, "<- S%d, Receive log, Prev=[%d]T%d, Len()=%d", args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries))
 	reply.Term = rf.currentTerm
 	reply.Success = false
+	termUpdated := false
 
 	if args.Term < rf.currentTerm {
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log", args.LeaderId)
@@ -66,10 +67,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if args.Term >= rf.currentTerm {
-		raftstate := rf.becomeFollowerLocked(args.Term)
-		if raftstate != nil {
+		shouldPersist := rf.becomeFollowerLocked(args.Term)
+		if shouldPersist {
+			termUpdated = true
+			currentTerm := rf.currentTerm
+			votedFor := rf.votedFor
 			rf.mu.Unlock()
-			rf.persistDirect(raftstate)
+			rf.persistMeta(currentTerm, votedFor)
 			rf.mu.Lock()
 		}
 	}
@@ -107,8 +111,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.log.appendFrom(prevLogIndex, entries)
 
-	raftstate := rf.preparePersistData()
-
 	needSignal := false
 	if leaderCommit > rf.commitIndex {
 		LOG(rf.me, rf.currentTerm, DApply, "Follower update the commit index %d->%d", rf.commitIndex, leaderCommit)
@@ -121,10 +123,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	LOG(rf.me, rf.currentTerm, DLog2, "Follower append logs: (%d, %d]", prevLogIndex, prevLogIndex+len(entries))
 
+	currentTerm := rf.currentTerm
+	votedFor := rf.votedFor
 	rf.mu.Unlock()
 
 	// 同步持久化 占用RPC的时间
-	rf.persistDirect(raftstate)
+	if termUpdated {
+		rf.persistMetaAndLog(currentTerm, votedFor, prevLogIndex, entries)
+	} else {
+		rf.persistLogReplace(prevLogIndex, entries)
+	}
 
 	reply.Success = true
 	LOG(rf.me, rf.currentTerm, DPersist, "Follower persist completed for logs: (%d, %d]", prevLogIndex, prevLogIndex+len(entries))
@@ -188,6 +196,19 @@ func convertToGrpcLogEntries(entries []LogEntry) []*G_LogEntry {
 	return grpcEntries
 }
 
+func appendEntriesTimeout(entries []LogEntry) time.Duration {
+	timeout := 2 * time.Second
+	if len(entries) == 0 {
+		return timeout
+	}
+
+	timeout += time.Duration(len(entries)) * 120 * time.Millisecond
+	if timeout > 30*time.Second {
+		return 30 * time.Second
+	}
+	return timeout
+}
+
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	if rf.me == server {
 		return false
@@ -212,13 +233,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		LeaderIP:     leaderIPBytes,
 	}
 
-	timeout := 800 * time.Millisecond
-	if len(args.Entries) > 5 {
-		timeout = 800*time.Millisecond + time.Duration(len(args.Entries))*80*time.Millisecond
-	}
-	if timeout > 10*time.Second {
-		timeout = 10 * time.Second
-	}
+	timeout := appendEntriesTimeout(args.Entries)
 	// 设置超时上下文
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -258,132 +273,132 @@ type replicationTask struct {
 	isSnapshot   bool
 }
 
-func (rf *Raft) startReplication(term int) bool {
-	rf.mu.Lock()
-	if rf.contextLostLocked(Leader, term) {
-		LOG(rf.me, rf.currentTerm, DLog, "Lost Leader[%d] to %s[T%d]", term, rf.role, rf.currentTerm)
-		rf.mu.Unlock()
-		return false
-	}
+// func (rf *Raft) startReplication(term int) bool {
+// 	rf.mu.Lock()
+// 	if rf.contextLostLocked(Leader, term) {
+// 		LOG(rf.me, rf.currentTerm, DLog, "Lost Leader[%d] to %s[T%d]", term, rf.role, rf.currentTerm)
+// 		rf.mu.Unlock()
+// 		return false
+// 	}
 
-	tasks := make([]replicationTask, 0, len(rf.peers))
-	for peer := 0; peer < len(rf.peers); peer++ {
-		if peer == rf.me {
-			rf.matchIndex[peer] = rf.log.size() - 1
-			rf.nextIndex[peer] = rf.log.size()
-			continue
-		}
+// 	tasks := make([]replicationTask, 0, len(rf.peers))
+// 	for peer := 0; peer < len(rf.peers); peer++ {
+// 		if peer == rf.me {
+// 			rf.matchIndex[peer] = rf.log.size() - 1
+// 			rf.nextIndex[peer] = rf.log.size()
+// 			continue
+// 		}
 
-		prevIndex := rf.nextIndex[peer] - 1
-		if prevIndex < rf.log.snapLastIdx {
-			// 如果已经在发送快照，跳过，避免重复发送
-			if rf.snapSending[peer] {
-				continue
-			}
-			rf.snapSending[peer] = true
-			// 必须在锁内拷贝快照数据，因为释放锁后 goroutine 可能访问到被修改的数据
-			snapshotCopy := make([]byte, len(rf.log.snapshot))
-			copy(snapshotCopy, rf.log.snapshot)
-			args := &InstallSnapshotArgs{
-				Term:              rf.currentTerm,
-				LeaderId:          rf.me,
-				LastIncludedIndex: rf.log.snapLastIdx,
-				LastIncludedTerm:  rf.log.snapLastTerm,
-				Snapshot:          snapshotCopy,
-			}
-			tasks = append(tasks, replicationTask{
-				peer:         peer,
-				snapshotArgs: args,
-				isSnapshot:   true,
-			})
-			continue
-		}
+// 		prevIndex := rf.nextIndex[peer] - 1
+// 		if prevIndex < rf.log.snapLastIdx {
+// 			// 如果已经在发送快照，跳过，避免重复发送
+// 			if rf.snapSending[peer] {
+// 				continue
+// 			}
+// 			rf.snapSending[peer] = true
+// 			// 必须在锁内拷贝快照数据，因为释放锁后 goroutine 可能访问到被修改的数据
+// 			snapshotCopy := make([]byte, len(rf.log.snapshot))
+// 			copy(snapshotCopy, rf.log.snapshot)
+// 			args := &InstallSnapshotArgs{
+// 				Term:              rf.currentTerm,
+// 				LeaderId:          rf.me,
+// 				LastIncludedIndex: rf.log.snapLastIdx,
+// 				LastIncludedTerm:  rf.log.snapLastTerm,
+// 				Snapshot:          snapshotCopy,
+// 			}
+// 			tasks = append(tasks, replicationTask{
+// 				peer:         peer,
+// 				snapshotArgs: args,
+// 				isSnapshot:   true,
+// 			})
+// 			continue
+// 		}
 
-		prevTerm := rf.log.at(prevIndex).Term
-		entries := rf.log.tail(prevIndex + 1)
-		args := &AppendEntriesArgs{
-			Term:         term,
-			LeaderId:     rf.me,
-			PrevLogIndex: prevIndex,
-			PrevLogTerm:  prevTerm,
-			Entries:      entries,
-			LeaderCommit: rf.commitIndex,
-			LeaderIP:     rf.LeaderIP,
-		}
-		tasks = append(tasks, replicationTask{
-			peer:       peer,
-			args:       args,
-			isSnapshot: false,
-		})
-	}
-	rf.mu.Unlock()
+// 		prevTerm := rf.log.at(prevIndex).Term
+// 		entries := rf.log.tail(prevIndex + 1)
+// 		args := &AppendEntriesArgs{
+// 			Term:         term,
+// 			LeaderId:     rf.me,
+// 			PrevLogIndex: prevIndex,
+// 			PrevLogTerm:  prevTerm,
+// 			Entries:      entries,
+// 			LeaderCommit: rf.commitIndex,
+// 			LeaderIP:     rf.LeaderIP,
+// 		}
+// 		tasks = append(tasks, replicationTask{
+// 			peer:       peer,
+// 			args:       args,
+// 			isSnapshot: false,
+// 		})
+// 	}
+// 	rf.mu.Unlock()
 
-	for _, task := range tasks {
-		if task.isSnapshot {
-			go rf.InstallToPeer(task.peer, term, task.snapshotArgs)
-		} else {
-			go rf.processReplicationReply(task.peer, task.args, term)
-		}
-	}
-	return true
-}
+// 	for _, task := range tasks {
+// 		if task.isSnapshot {
+// 			go rf.InstallToPeer(task.peer, term, task.snapshotArgs)
+// 		} else {
+// 			go rf.processReplicationReply(task.peer, task.args, term)
+// 		}
+// 	}
+// 	return true
+// }
 
-func (rf *Raft) processReplicationReply(peer int, args *AppendEntriesArgs, term int) {
-	reply := &AppendEntriesReply{}
-	ok := rf.sendAppendEntries(peer, args, reply)
-	if !ok {
-		LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Lost or crashed", peer)
-		return
-	}
+// func (rf *Raft) processReplicationReply(peer int, args *AppendEntriesArgs, term int) {
+// 	reply := &AppendEntriesReply{}
+// 	ok := rf.sendAppendEntries(peer, args, reply)
+// 	if !ok {
+// 		LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Lost or crashed", peer)
+// 		return
+// 	}
 
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+// 	rf.mu.Lock()
+// 	defer rf.mu.Unlock()
 
-	if reply.Term > rf.currentTerm {
-		raftstate := rf.becomeFollowerLocked(reply.Term)
-		if raftstate != nil {
-			rf.mu.Unlock()
-			rf.persistDirect(raftstate)
-			rf.mu.Lock()
-		}
-		return
-	}
-	if rf.contextLostLocked(Leader, term) {
-		LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Context Lost, T%d:Leader->T%d:%s", peer, term, rf.currentTerm, rf.role)
-		return
-	}
+// 	if reply.Term > rf.currentTerm {
+// 		raftstate := rf.becomeFollowerLocked(reply.Term)
+// 		if raftstate != nil {
+// 			rf.mu.Unlock()
+// 			rf.persistDirect(raftstate)
+// 			rf.mu.Lock()
+// 		}
+// 		return
+// 	}
+// 	if rf.contextLostLocked(Leader, term) {
+// 		LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Context Lost, T%d:Leader->T%d:%s", peer, term, rf.currentTerm, rf.role)
+// 		return
+// 	}
 
-	if !reply.Success {
-		prevIndex := rf.nextIndex[peer]
-		if reply.ConfilictTerm == InvalidTerm {
-			rf.nextIndex[peer] = reply.ConfilictIndex
-		} else {
-			firstTermIndex := rf.log.firstFor(reply.ConfilictTerm)
-			if firstTermIndex != InvalidTerm {
-				rf.nextIndex[peer] = firstTermIndex + 1
-			} else {
-				rf.nextIndex[peer] = reply.ConfilictIndex
-			}
-		}
-		if rf.nextIndex[peer] > prevIndex {
-			rf.nextIndex[peer] = prevIndex
-		}
-		nextPrevIndex := rf.nextIndex[peer] - 1
-		nextPrevTerm := InvalidTerm
-		if nextPrevIndex >= rf.log.snapLastIdx {
-			nextPrevTerm = rf.log.at(nextPrevIndex).Term
-		}
-		LOG(rf.me, rf.currentTerm, DLog, "-> S%d,Not match at Prev = [%d]T%d,Try Next Prev = [%d]T%d",
-			peer, args.PrevLogIndex, args.PrevLogTerm, nextPrevIndex, nextPrevTerm)
-		return
-	}
+// 	if !reply.Success {
+// 		prevIndex := rf.nextIndex[peer]
+// 		if reply.ConfilictTerm == InvalidTerm {
+// 			rf.nextIndex[peer] = reply.ConfilictIndex
+// 		} else {
+// 			firstTermIndex := rf.log.firstFor(reply.ConfilictTerm)
+// 			if firstTermIndex != InvalidTerm {
+// 				rf.nextIndex[peer] = firstTermIndex + 1
+// 			} else {
+// 				rf.nextIndex[peer] = reply.ConfilictIndex
+// 			}
+// 		}
+// 		if rf.nextIndex[peer] > prevIndex {
+// 			rf.nextIndex[peer] = prevIndex
+// 		}
+// 		nextPrevIndex := rf.nextIndex[peer] - 1
+// 		nextPrevTerm := InvalidTerm
+// 		if nextPrevIndex >= rf.log.snapLastIdx {
+// 			nextPrevTerm = rf.log.at(nextPrevIndex).Term
+// 		}
+// 		LOG(rf.me, rf.currentTerm, DLog, "-> S%d,Not match at Prev = [%d]T%d,Try Next Prev = [%d]T%d",
+// 			peer, args.PrevLogIndex, args.PrevLogTerm, nextPrevIndex, nextPrevTerm)
+// 		return
+// 	}
 
-	rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
-	rf.nextIndex[peer] = rf.matchIndex[peer] + 1
-	majorityMactched := rf.getMajorityIndexLocked()
-	if majorityMactched > rf.commitIndex && rf.log.at(majorityMactched).Term == rf.currentTerm {
-		LOG(rf.me, rf.currentTerm, DApply, "leader update commit index %d -> %d", rf.commitIndex, majorityMactched)
-		rf.commitIndex = majorityMactched
-		rf.applyCond.Signal()
-	}
-}
+// 	rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
+// 	rf.nextIndex[peer] = rf.matchIndex[peer] + 1
+// 	majorityMactched := rf.getMajorityIndexLocked()
+// 	if majorityMactched > rf.commitIndex && rf.log.at(majorityMactched).Term == rf.currentTerm {
+// 		LOG(rf.me, rf.currentTerm, DApply, "leader update commit index %d -> %d", rf.commitIndex, majorityMactched)
+// 		rf.commitIndex = majorityMactched
+// 		rf.applyCond.Signal()
+// 	}
+// }

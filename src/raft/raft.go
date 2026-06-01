@@ -38,10 +38,11 @@ import (
 
 // 定义最短和最长的超时时间分别为 250ms和400ms
 const (
-	MinElectionTimeout time.Duration = 500 * time.Millisecond
-	MaxElectionTimeout time.Duration = 1500 * time.Millisecond
+	MinElectionTimeout time.Duration = 250 * time.Millisecond
+	MaxElectionTimeout time.Duration = 400 * time.Millisecond
 
 	replicateInterval time.Duration = 80 * time.Millisecond
+	grpcMaxMessageSize              = 64 * 1024 * 1024
 )
 
 const (
@@ -104,8 +105,8 @@ type Raft struct {
 
 	// 本质上来说，下面这两个字段是各个 Peer 中日志进度在 Leader 中的一个视图（view）。
 	// Leader 正是依据此视图来决定给各个 Peer 发送多少日志。也是依据此视图，Leader 可以计算全局的 `commitIndex`。
-	nextIndex  []int // 发送到该服务器的下一个日志号（初始值为领导人最后的日志号+1）
-	matchIndex []int // 记录了 Leader 已知的每个 follower 已经复制的最高日志索引（初始值为0）
+	nextIndex   []int  // 发送到该服务器的下一个日志号（初始值为领导人最后的日志号+1）
+	matchIndex  []int  // 记录了 Leader 已知的每个 follower 已经复制的最高日志索引（初始值为0）
 	snapSending []bool // 标记每个 peer 是否正在发送快照，防止重复发送
 
 	commitIndex   int           // 已知已提交的最高的日志条目的索引（初始值为0，单调递增）
@@ -242,10 +243,10 @@ func (rf *Raft) GetRaftStateSize() int {
 
 // 将调用此函数的节点转换状态成为follower，任期更改为传入参数term
 // 返回需要在锁外持久化的 raftstate 数据（如果不需要持久化则返回 nil）
-func (rf *Raft) becomeFollowerLocked(term int) []byte {
+func (rf *Raft) becomeFollowerLocked(term int) bool {
 	if rf.currentTerm > term {
 		LOG(rf.me, rf.currentTerm, DError, "Can not be a Follower,lower term:T%d", term)
-		return nil
+		return false
 	}
 
 	LOG(rf.me, rf.currentTerm, DVote, "%s -> Follower,For T%v->T%v", rf.role, rf.currentTerm, term)
@@ -255,10 +256,6 @@ func (rf *Raft) becomeFollowerLocked(term int) []byte {
 		rf.votedFor = -1
 	}
 	rf.currentTerm = term
-	var raftstate []byte
-	if shouldPersist {
-		raftstate = rf.preparePersistData()
-	}
 	rf.resetLease()
 	rf.resetElectionTimerLocked()
 
@@ -266,15 +263,15 @@ func (rf *Raft) becomeFollowerLocked(term int) []byte {
 		rf.pipelineReplicator.Stop()
 		rf.pipelineReplicator = nil
 	}
-	return raftstate
+	return shouldPersist
 }
 
 // 将调用此函数的节点转换状态成为candidate
 // 返回需要在锁外持久化的 raftstate 数据
-func (rf *Raft) becomeCandidateLocked() []byte {
+func (rf *Raft) becomeCandidateLocked() bool {
 	if rf.role == Leader { // 如果我已经是leader我就无法变为candidate
 		LOG(rf.me, rf.currentTerm, DError, "Leader can not be a Candidate")
-		return nil
+		return false
 	}
 
 	LOG(rf.me, rf.currentTerm, DVote, "%s->Candidate,For T%d", rf.role, rf.currentTerm+1)
@@ -285,9 +282,8 @@ func (rf *Raft) becomeCandidateLocked() []byte {
 	// }
 	rf.role = Candidate
 	rf.votedFor = rf.me
-	raftstate := rf.preparePersistData()
 	rf.resetElectionTimerLocked() // 重置选举超时时间
-	return raftstate
+	return true
 }
 
 // 将调用此函数的节点转换状态成为leader
@@ -354,13 +350,14 @@ func (rf *Raft) Start(command []Op) (int, int, bool) {
 
 	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d", rf.log.size()-1, rf.currentTerm)
 	// 在锁内序列化数据，释放锁后再做 IO（避免阻塞心跳）
-	raftstate := rf.preparePersistData()
+	prevIndex := rf.log.size() - 2
+	entries := []LogEntry{rf.log.at(rf.log.size() - 1)}
 	index := rf.log.size() - 1
 	term := rf.currentTerm
 	rf.mu.Unlock()
 
 	// 在锁外持久化（WAL Append + 可能的 fsync，约 10ms）
-	rf.persistDirect(raftstate)
+	rf.persistLogReplace(prevIndex, entries)
 
 	return index, term, true
 }
@@ -458,8 +455,8 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 
 		// 注册到rpc网络中，成为rpc网络中的一个节点
 		grpcServer := grpc.NewServer(
-			grpc.MaxRecvMsgSize(10*1024*1024),
-			grpc.MaxSendMsgSize(10*1024*1024),
+			grpc.MaxRecvMsgSize(grpcMaxMessageSize),
+			grpc.MaxSendMsgSize(grpcMaxMessageSize),
 			grpc.InitialWindowSize(2*1024*1024),
 			grpc.InitialConnWindowSize(4*1024*1024),
 			grpc.NumStreamWorkers(8),
@@ -500,7 +497,8 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 				PermitWithoutStream: true,
 			}),
 			grpc.WithDefaultCallOptions(
-				grpc.MaxCallRecvMsgSize(10*1024*1024),
+				grpc.MaxCallRecvMsgSize(grpcMaxMessageSize),
+				grpc.MaxCallSendMsgSize(grpcMaxMessageSize),
 			),
 			grpc.WithInitialWindowSize(2*1024*1024),
 			grpc.WithInitialConnWindowSize(4*1024*1024),
