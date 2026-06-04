@@ -41,8 +41,8 @@ const (
 	MinElectionTimeout time.Duration = 250 * time.Millisecond
 	MaxElectionTimeout time.Duration = 400 * time.Millisecond
 
-	replicateInterval time.Duration = 80 * time.Millisecond
-	grpcMaxMessageSize              = 64 * 1024 * 1024
+	replicateInterval  time.Duration = 80 * time.Millisecond
+	grpcMaxMessageSize               = 64 * 1024 * 1024
 )
 
 const (
@@ -134,16 +134,6 @@ type LeaseState struct {
 	LeaseValid      bool
 	ReadIndex       int
 	LeaseExpiration time.Time
-}
-
-// 性能统计数据结构
-type PerformanceStats struct {
-	AppendRpcCount      int64   `json:"append_rpc_count"`
-	AppendRpcAvgTime    float64 `json:"append_rpc_avg_time_ms"`
-	HeartbeatCount      int64   `json:"heartbeat_count"`
-	HeartbeatAvgTime    float64 `json:"heartbeat_avg_time_ms"`
-	TotalRpcTime        int64   `json:"total_rpc_time_ms"`
-	MeasurementDuration string  `json:"measurement_duration"`
 }
 
 func (rf *Raft) IsLeaseValid() bool {
@@ -294,9 +284,15 @@ func (rf *Raft) becomeLeaderLocked() {
 	}
 	LOG(rf.me, rf.currentTerm, DVote, "%s->Leader,For T%d", rf.role, rf.currentTerm)
 	rf.role = Leader
+	lastLogIndex := rf.log.size() - 1
+
 	for peer := 0; peer < len(rf.peers); peer++ {
 		rf.nextIndex[peer] = rf.log.size()
-		rf.matchIndex[peer] = 0
+		if rf.me == peer {
+			rf.matchIndex[peer] = lastLogIndex
+		} else {
+			rf.matchIndex[peer] = 0
+		}
 		rf.snapSending[peer] = false
 	}
 	rf.updateLease()
@@ -354,9 +350,12 @@ func (rf *Raft) Start(command []Op) (int, int, bool) {
 	entries := []LogEntry{rf.log.at(rf.log.size() - 1)}
 	index := rf.log.size() - 1
 	term := rf.currentTerm
+	// Leader 自己已经追加了这条日志，本地复制进度应立即前移。
+	rf.matchIndex[rf.me] = index
+	rf.nextIndex[rf.me] = index + 1
 	rf.mu.Unlock()
-
 	// 在锁外持久化（WAL Append + 可能的 fsync，约 10ms）
+
 	rf.persistLogReplace(prevIndex, entries)
 
 	return index, term, true
@@ -387,10 +386,6 @@ func (rf *Raft) contextLostLocked(role Role, term int) bool {
 	return !(rf.currentTerm == term && rf.role == role)
 }
 
-func MakeRaft() *Raft {
-	return &Raft{}
-}
-
 // func (rf *Raft) GetLeaderId() int {
 // 	rf.mu.Lock()
 // 	defer rf.mu.Unlock()
@@ -418,7 +413,7 @@ func Make(peerAddrs []string, me int, applyCh chan ApplyMsg) *Raft {
 	rf.currentTerm = 1
 	rf.votedFor = -1
 
-	rf.leaseDuration = 400 * time.Millisecond
+	rf.leaseDuration = 400 * time.Millisecond // 400ms
 	rf.lastHeartbeatTime = time.Now()
 	rf.leaseExpiration = rf.lastHeartbeatTime.Add(rf.leaseDuration)
 	rf.enableLeaseRead = true

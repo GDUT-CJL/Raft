@@ -6,7 +6,6 @@ import (
 	"course/labgob"
 	"course/raft"
 	"fmt"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,17 +36,17 @@ type KVServer struct {
 
 	// key为clientID，value是LastOperationInfo（SeqId + Reply）
 	// 客户端每次发送一个请求在server中都会给随机一个ClentId和SeqId
-	clientSeqTable map[int64]LastOperationInfo // 客户端最后处理的序列号,处理重复请求
-	notifyChans    map[int]chan []*OpReply
-	notifyMu       sync.RWMutex
+	clientSeqTable     map[int64]LastOperationInfo // 客户端最后处理的序列号,处理重复请求
+	notifyChans        map[int]chan []*OpReply
+	notifyMu           sync.RWMutex
 	snapshotInProgress bool
-	Counter        int64 // 原子计数器,用于测试
+	Counter            int64 // 原子计数器,用于测试
 	// 添加快照相关的字段
 	persister *raft.Persister
 
-	snapshotCond   *sync.Cond     // 用于快照制作的同步
-	snapshotQueue  []snapshotTask // 快照任务队列
-	lastSnapshot   time.Time      // 上次快照时间，用于冷却
+	snapshotCond  *sync.Cond     // 用于快照制作的同步
+	snapshotQueue []snapshotTask // 快照任务队列
+	lastSnapshot  time.Time      // 上次快照时间，用于冷却
 }
 
 type snapshotTask struct {
@@ -201,17 +200,6 @@ func (kv *KVServer) restoreFromSnapshot(snapshot []byte) {
 
 	kv.clientSeqTable = clientSeqTable
 	fmt.Printf("KVServer[%d] restored from snapshot\n", kv.me)
-}
-
-func (kv *KVServer) printResourceUsage() {
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-
-	fmt.Printf("KVServer[%d] Resource: Heap=%vMB, Goroutines=%d, GC=%v\n",
-		kv.me,
-		m.Alloc/1024/1024,
-		runtime.NumGoroutine(),
-		time.Duration(m.PauseTotalNs).String())
 }
 
 func (kv *KVServer) applyTask() {

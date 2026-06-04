@@ -23,8 +23,8 @@ const (
 )
 
 const (
-	WALRecordMetadata   WALRecordType = 3
-	WALRecordLogReplace WALRecordType = 4
+	WALRecordMetadata   WALRecordType = 3 // 元数据记录（包含 leaderId, term, lastIncludedIndex, lastIncludedTerm）
+	WALRecordLogReplace WALRecordType = 4 // 日志替换记录（包含 log）
 )
 
 const (
@@ -62,7 +62,7 @@ type WAL struct {
 	closed bool
 }
 
-// OpenWAL 打开或创建 WAL
+// OpenWAL 打开或创建 WAL，找到最后一个 .wal 文件
 func OpenWAL(dir string) (*WAL, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create WAL dir failed: %w", err)
@@ -151,7 +151,7 @@ func (w *WAL) doSync() {
 
 	// fsync
 	if w.file != nil {
-		w.file.Sync()
+		w.file.Sync() // 这是阻塞调用！
 	}
 
 	w.mu.Unlock()
@@ -264,8 +264,8 @@ func (w *WAL) AppendBatch(records []WALRecord) error {
 	default:
 	}
 
-	// 等待 fsync 完成
-	<-req.done
+	// 等待 fsync 完成（保证 Raft 安全性）
+	<-req.done // ← 这里会阻塞，直到 fsync 完成
 
 	return nil
 }
@@ -282,16 +282,25 @@ func (w *WAL) SyncNow() error {
 }
 
 // encodeRecord 编码一条 WAL 记录
+/*
+编码格式：
+	┌─────────┬──────┬──────────┬─────────────────┐
+	│   CRC   │ Type │ DataLen  │      Data       │
+	│  4 bytes│1 byte│ 4 bytes  │  DataLen bytes  │
+	└─────────┴──────┴──────────┴─────────────────┘
+		↓        ↓        ↓              ↓
+	校验和   记录类型  数据长度      实际数据
+*/
 func (w *WAL) encodeRecord(recordType WALRecordType, data []byte) ([]byte, error) {
-	totalLen := walHeaderSize + len(data)
+	totalLen := walHeaderSize + len(data) // 9 + dataLen
 	buf := make([]byte, totalLen)
 
-	buf[4] = byte(recordType)
-	binary.LittleEndian.PutUint32(buf[5:], uint32(len(data)))
-	copy(buf[walHeaderSize:], data)
+	buf[4] = byte(recordType)                                 // 第5字节：类型
+	binary.LittleEndian.PutUint32(buf[5:], uint32(len(data))) // 第6-9字节：长度
+	copy(buf[walHeaderSize:], data)                           // 数据
 
-	crc := crc32.ChecksumIEEE(buf[4:])
-	binary.LittleEndian.PutUint32(buf[0:], crc)
+	crc := crc32.ChecksumIEEE(buf[4:])          // CRC 覆盖类型+长度+数据
+	binary.LittleEndian.PutUint32(buf[0:], crc) // 第1-4字节：CRC
 
 	return buf, nil
 }

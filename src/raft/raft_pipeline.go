@@ -11,6 +11,7 @@ const (
 	maxEntriesPerAppendRPC = 64
 )
 
+// 表示“一次发给follower的复制任务”
 type pipelineEntry struct {
 	index     int
 	term      int
@@ -18,10 +19,11 @@ type pipelineEntry struct {
 	timestamp time.Time
 }
 
+// Leader针对某一个人follower的复制窗口控制器
 type peerPipeline struct {
 	peer        int
 	rf          *Raft
-	inflight    []*pipelineEntry
+	inflight    []*pipelineEntry // 里面存的是“已经发出去但还没处理完成”的请求，长度不超过maxInflight
 	nextSendIdx int
 	stopCh      chan struct{}
 	cond        *sync.Cond
@@ -84,6 +86,7 @@ func (pp *peerPipeline) getInflightCount() int {
 	return len(pp.inflight)
 }
 
+// 发送AppendEntriesRPC给follower
 func (pp *peerPipeline) sendAndProcess(entry *pipelineEntry, term int) {
 	reply := &AppendEntriesReply{}
 	ok := pp.rf.sendAppendEntries(pp.peer, entry.args, reply)
@@ -142,6 +145,7 @@ func (pp *peerPipeline) sendAndProcess(entry *pipelineEntry, term int) {
 	}
 }
 
+// Leader针对所有follower的复制窗口控制器
 type PipelineReplicator struct {
 	rf        *Raft
 	term      int
@@ -150,6 +154,7 @@ type PipelineReplicator struct {
 	running   int32
 }
 
+// 初始化Leader针对所有follower的复制窗口控制器
 func NewPipelineReplicator(rf *Raft, term int) *PipelineReplicator {
 	pr := &PipelineReplicator{
 		rf:        rf,
@@ -168,6 +173,7 @@ func NewPipelineReplicator(rf *Raft, term int) *PipelineReplicator {
 	return pr
 }
 
+// 启动Leader针对所有follower的复制窗口控制器
 func (pr *PipelineReplicator) Start() {
 	if !atomic.CompareAndSwapInt32(&pr.running, 0, 1) {
 		return
@@ -192,8 +198,11 @@ func (pr *PipelineReplicator) Stop() {
 	}
 }
 
+// Leader针对所有follower的复制窗口控制器的复制循环
+// 每个循环会尝试发送一个AppendEntriesRPC给所有follower
+// 如果follower没有处理完成，会等待下一次循环
 func (pr *PipelineReplicator) replicationLoop() {
-	ticker := time.NewTicker(replicateInterval)
+	ticker := time.NewTicker(replicateInterval) // 80ms
 	defer ticker.Stop()
 
 	for {
@@ -209,6 +218,12 @@ func (pr *PipelineReplicator) replicationLoop() {
 	}
 }
 
+/*
+1. 检查 leader 身份是否还有效
+2. 遍历所有 follower pipeline
+3. 对“还能发”的 follower 生成一个 `AppendEntries` 任务
+4. 锁外真正把任务塞进该 peer 的 inflight 队列
+*/
 func (pr *PipelineReplicator) trySendEntries() {
 	pr.rf.mu.Lock()
 
@@ -226,11 +241,13 @@ func (pr *PipelineReplicator) trySendEntries() {
 	tasks := make([]sendTask, 0, len(pr.pipelines))
 
 	for peer, pipeline := range pr.pipelines {
+		// 判断这个 peer 还能不能发AppendEntriesRPC
 		if pipeline == nil || !pipeline.canSend() {
 			continue
 		}
 
 		prevIndex := pr.rf.nextIndex[peer] - 1
+		// 决定发快照还是发日志
 		if prevIndex < pr.rf.log.snapLastIdx {
 			// 如果已经在发送快照，跳过，避免重复发送
 			if pr.rf.snapSending[peer] {
@@ -254,6 +271,7 @@ func (pr *PipelineReplicator) trySendEntries() {
 		if len(entries) == 0 {
 			continue
 		}
+		// 一次最多发送64条日志条
 		if len(entries) > maxEntriesPerAppendRPC {
 			entries = entries[:maxEntriesPerAppendRPC]
 		}
@@ -287,7 +305,7 @@ func (pr *PipelineReplicator) trySendEntries() {
 			args:      task.args,
 			timestamp: time.Now(),
 		}
-
+		// 把任务放到该follower的inflight队列
 		task.pipeline.addInflight(entry)
 	}
 }

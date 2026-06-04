@@ -133,7 +133,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else {
 		rf.persistLogReplace(prevLogIndex, entries)
 	}
-
+	// 持久化成功后才回复reply.Success = true
 	reply.Success = true
 	LOG(rf.me, rf.currentTerm, DPersist, "Follower persist completed for logs: (%d, %d]", prevLogIndex, prevLogIndex+len(entries))
 	if needSignal {
