@@ -18,6 +18,11 @@ import (
 	"unsafe"
 )
 
+const (
+	StorageEngineLegacy  = 0
+	StorageEngineRocksDB = 1
+)
+
 //export goLogCallback
 func goLogCallback(message *C.char, level C.int) {
 	// 这个函数在Go中实现，但可以被C调用
@@ -106,6 +111,7 @@ func InitStorage() {
 	C.init_rbtree()
 	C.init_skipTable()
 	C.init_rocksdb()
+	C.storage_set_active_engine(C.int(StorageEngineRocksDB))
 }
 
 func DestoryStorage() {
@@ -114,6 +120,7 @@ func DestoryStorage() {
 	C.dest_rbtree()
 	C.dest_btree()
 	C.dest_skiplist()
+	C.close_Rocksdb()
 }
 
 // ----------------------------Array------------------------------------- //

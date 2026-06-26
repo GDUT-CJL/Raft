@@ -93,6 +93,7 @@ void close_Rocksdb() {
     if (rocksdb_obj->restore_options) rocksdb_restore_options_destroy(rocksdb_obj->restore_options);
     
     free(rocksdb_obj);
+    rocksdb_obj = NULL;
 }
 
 // 设置键值对
@@ -251,5 +252,463 @@ int kvs_rocksdb_batch_set(const char** keys, const char** values, int count) {
         return -1;
     }
     
+    return 0;
+}
+
+typedef struct snapshot_buf_s {
+    char* data;
+    size_t size;
+    size_t capacity;
+} snapshot_buf_t;
+
+static int append_snapshot_bytes(snapshot_buf_t* buf, const void* src, size_t len) {
+    if (!buf || (!src && len > 0)) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (buf->size + len > buf->capacity) {
+        size_t new_capacity = buf->capacity == 0 ? 4096 : buf->capacity;
+        while (new_capacity < buf->size + len) {
+            new_capacity *= 2;
+        }
+        char* new_data = (char*)malloc(new_capacity);
+        if (!new_data) {
+            return -1;
+        }
+        if (buf->data && buf->size > 0) {
+            memcpy(new_data, buf->data, buf->size);
+            free(buf->data);
+        }
+        buf->data = new_data;
+        buf->capacity = new_capacity;
+    }
+    memcpy(buf->data + buf->size, src, len);
+    buf->size += len;
+    return 0;
+}
+
+static int append_u32(snapshot_buf_t* buf, uint32_t value) {
+    return append_snapshot_bytes(buf, &value, sizeof(value));
+}
+
+static int append_u64(snapshot_buf_t* buf, uint64_t value) {
+    return append_snapshot_bytes(buf, &value, sizeof(value));
+}
+
+static int join_path(char* dest, size_t dest_size, const char* left, const char* right) {
+    int n = 0;
+    if (!dest || dest_size == 0 || !left || !right) {
+        return -1;
+    }
+    n = snprintf(dest, dest_size, "%s/%s", left, right);
+    if (n < 0 || (size_t)n >= dest_size) {
+        return -1;
+    }
+    return 0;
+}
+
+static int read_u32(const char** ptr, const char* end, uint32_t* value) {
+    if (!ptr || !*ptr || !value || *ptr + sizeof(uint32_t) > end) {
+        return -1;
+    }
+    memcpy(value, *ptr, sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    return 0;
+}
+
+static int read_u64(const char** ptr, const char* end, uint64_t* value) {
+    if (!ptr || !*ptr || !value || *ptr + sizeof(uint64_t) > end) {
+        return -1;
+    }
+    memcpy(value, *ptr, sizeof(uint64_t));
+    *ptr += sizeof(uint64_t);
+    return 0;
+}
+
+static int path_exists(const char* path) {
+    struct stat st;
+    return (path && stat(path, &st) == 0);
+}
+
+static int ensure_dir_exists(const char* path) {
+    if (!path || path[0] == '\0') {
+        return -1;
+    }
+    if (path_exists(path)) {
+        return 0;
+    }
+    if (mkdir(path, 0755) == 0) {
+        return 0;
+    }
+    if (errno == EEXIST) {
+        return 0;
+    }
+    return -1;
+}
+
+static int remove_dir_recursive(const char* path) {
+    DIR* dir = NULL;
+    struct dirent* entry = NULL;
+    char child[4096];
+    struct stat st;
+
+    if (!path || !path_exists(path)) {
+        return 0;
+    }
+    if (stat(path, &st) != 0) {
+        return -1;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        return remove(path);
+    }
+
+    dir = opendir(path);
+    if (!dir) {
+        return -1;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
+        if (stat(child, &st) != 0) {
+            closedir(dir);
+            return -1;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            if (remove_dir_recursive(child) != 0) {
+                closedir(dir);
+                return -1;
+            }
+        } else if (remove(child) != 0) {
+            closedir(dir);
+            return -1;
+        }
+    }
+
+    closedir(dir);
+    return rmdir(path);
+}
+
+static int pack_backup_dir_recursive(const char* root, const char* relative, snapshot_buf_t* buf, uint64_t* file_count) {
+    char full_path[4096];
+    DIR* dir = NULL;
+    struct dirent* entry = NULL;
+    struct stat st;
+    char child_relative[4096];
+
+    if (relative[0] == '\0') {
+        snprintf(full_path, sizeof(full_path), "%s", root);
+    } else {
+        snprintf(full_path, sizeof(full_path), "%s/%s", root, relative);
+    }
+
+    dir = opendir(full_path);
+    if (!dir) {
+        return -1;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        if (relative[0] == '\0') {
+            snprintf(child_relative, sizeof(child_relative), "%s", entry->d_name);
+        } else {
+            snprintf(child_relative, sizeof(child_relative), "%s/%s", relative, entry->d_name);
+        }
+        if (join_path(full_path, sizeof(full_path), root, child_relative) != 0) {
+            closedir(dir);
+            return -1;
+        }
+
+        if (stat(full_path, &st) != 0) {
+            closedir(dir);
+            return -1;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            if (pack_backup_dir_recursive(root, child_relative, buf, file_count) != 0) {
+                closedir(dir);
+                return -1;
+            }
+            continue;
+        }
+
+        FILE* fp = fopen(full_path, "rb");
+        char io_buf[8192];
+        size_t read_bytes = 0;
+        uint32_t path_len = (uint32_t)strlen(child_relative);
+        uint64_t file_size = (uint64_t)st.st_size;
+
+        if (!fp) {
+            closedir(dir);
+            return -1;
+        }
+
+        if (append_u32(buf, path_len) != 0 ||
+            append_snapshot_bytes(buf, child_relative, path_len) != 0 ||
+            append_u64(buf, file_size) != 0) {
+            fclose(fp);
+            closedir(dir);
+            return -1;
+        }
+
+        while ((read_bytes = fread(io_buf, 1, sizeof(io_buf), fp)) > 0) {
+            if (append_snapshot_bytes(buf, io_buf, read_bytes) != 0) {
+                fclose(fp);
+                closedir(dir);
+                return -1;
+            }
+        }
+        fclose(fp);
+        (*file_count)++;
+    }
+
+    closedir(dir);
+    return 0;
+}
+
+static int mkdirs_for_parent(const char* file_path) {
+    char tmp[4096];
+    size_t len = 0;
+    size_t i = 0;
+
+    if (!file_path) {
+        return -1;
+    }
+    snprintf(tmp, sizeof(tmp), "%s", file_path);
+    len = strlen(tmp);
+
+    for (i = 1; i < len; i++) {
+        if (tmp[i] == '/' || tmp[i] == '\\') {
+            char old = tmp[i];
+            tmp[i] = '\0';
+            if (strlen(tmp) > 0 && ensure_dir_exists(tmp) != 0) {
+                return -1;
+            }
+            tmp[i] = old;
+        }
+    }
+    return 0;
+}
+
+static int unpack_backup_to_dir(const char* data, size_t size, const char* target_dir) {
+    const char* ptr = data;
+    const char* end = data + size;
+    uint64_t file_count = 0;
+    uint64_t i = 0;
+
+    if (read_u64(&ptr, end, &file_count) != 0) {
+        return -1;
+    }
+
+    if (remove_dir_recursive(target_dir) != 0) {
+        return -1;
+    }
+    if (ensure_dir_exists(target_dir) != 0) {
+        return -1;
+    }
+
+    for (i = 0; i < file_count; i++) {
+        uint32_t rel_len = 0;
+        uint64_t file_size = 0;
+        char rel_path[4096];
+        char full_path[4096];
+        FILE* fp = NULL;
+
+        if (read_u32(&ptr, end, &rel_len) != 0 || rel_len == 0 || rel_len >= sizeof(rel_path)) {
+            return -1;
+        }
+        if (ptr + rel_len > end) {
+            return -1;
+        }
+        memcpy(rel_path, ptr, rel_len);
+        rel_path[rel_len] = '\0';
+        ptr += rel_len;
+
+        if (read_u64(&ptr, end, &file_size) != 0 || ptr + file_size > end) {
+            return -1;
+        }
+
+        if (join_path(full_path, sizeof(full_path), target_dir, rel_path) != 0) {
+            return -1;
+        }
+        if (mkdirs_for_parent(full_path) != 0) {
+            return -1;
+        }
+
+        fp = fopen(full_path, "wb");
+        if (!fp) {
+            return -1;
+        }
+        if (file_size > 0 && fwrite(ptr, 1, (size_t)file_size, fp) != (size_t)file_size) {
+            fclose(fp);
+            return -1;
+        }
+        fclose(fp);
+        ptr += file_size;
+    }
+
+    return ptr == end ? 0 : -1;
+}
+
+static int reopen_backup_engine(void) {
+    char* err = NULL;
+
+    if (!rocksdb_obj || !rocksdb_obj->options) {
+        return -1;
+    }
+    if (rocksdb_obj->be) {
+        rocksdb_backup_engine_close(rocksdb_obj->be);
+        rocksdb_obj->be = NULL;
+    }
+
+    rocksdb_obj->be = rocksdb_backup_engine_open(rocksdb_obj->options, PATH_TO_ROCKSDB_BACKUP, &err);
+    if (err != NULL) {
+        fprintf(stderr, "Backup engine reopen error: %s\n", err);
+        rocksdb_free((void*)err);
+        rocksdb_obj->be = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+static int reopen_db_only(void) {
+    char* err = NULL;
+    rocksdb_t* db = NULL;
+
+    if (!rocksdb_obj || !rocksdb_obj->options) {
+        return -1;
+    }
+    if (rocksdb_obj->db) {
+        rocksdb_close(rocksdb_obj->db);
+        rocksdb_obj->db = NULL;
+    }
+
+    db = rocksdb_open(rocksdb_obj->options, PATH_TO_ROCKSDB, &err);
+    if (err != NULL) {
+        fprintf(stderr, "RocksDB reopen error: %s\n", err);
+        rocksdb_free((void*)err);
+        return -1;
+    }
+    rocksdb_obj->db = db;
+    return 0;
+}
+
+static int recreate_backup_dir(void) {
+    if (remove_dir_recursive(PATH_TO_ROCKSDB_BACKUP) != 0) {
+        return -1;
+    }
+    return ensure_dir_exists(PATH_TO_ROCKSDB_BACKUP);
+}
+
+int rocksdb_snapshot(char** data, size_t* size) {
+    snapshot_buf_t buf;
+    uint64_t header_offset = 0;
+    uint64_t file_count = 0;
+
+    memset(&buf, 0, sizeof(buf));
+    if (!rocksdb_obj || !rocksdb_obj->db || !rocksdb_obj->be || !data || !size) {
+        return -1;
+    }
+
+    if (recreate_backup_dir() != 0) {
+        return -1;
+    }
+    if (reopen_backup_engine() != 0) {
+        return -1;
+    }
+    if (kvs_rocksdb_create_backup() != 0) {
+        return -1;
+    }
+
+    header_offset = buf.size;
+    if (append_u64(&buf, 0) != 0) {
+        free(buf.data);
+        return -1;
+    }
+    if (pack_backup_dir_recursive(PATH_TO_ROCKSDB_BACKUP, "", &buf, &file_count) != 0) {
+        free(buf.data);
+        return -1;
+    }
+    memcpy(buf.data + header_offset, &file_count, sizeof(file_count));
+
+    *data = (char*)kvs_malloc(buf.size);
+    if (!*data) {
+        free(buf.data);
+        return -1;
+    }
+    memcpy(*data, buf.data, buf.size);
+    *size = buf.size;
+    free(buf.data);
+    return 0;
+}
+
+int rocksdb_restore(const char* data, size_t size) {
+    char* err = NULL;
+
+    if (!rocksdb_obj || !rocksdb_obj->options || !data || size < sizeof(uint64_t)) {
+        return -1;
+    }
+
+    if (!rocksdb_obj->restore_options) {
+        rocksdb_obj->restore_options = rocksdb_restore_options_create();
+        if (!rocksdb_obj->restore_options) {
+            return -1;
+        }
+        rocksdb_restore_options_set_keep_log_files(rocksdb_obj->restore_options, 0);
+    }
+
+    if (rocksdb_obj->db) {
+        rocksdb_close(rocksdb_obj->db);
+        rocksdb_obj->db = NULL;
+    }
+    if (rocksdb_obj->be) {
+        rocksdb_backup_engine_close(rocksdb_obj->be);
+        rocksdb_obj->be = NULL;
+    }
+
+    if (unpack_backup_to_dir(data, size, PATH_TO_ROCKSDB_BACKUP) != 0) {
+        return -1;
+    }
+    if (ensure_dir_exists(PATH_TO_ROCKSDB) != 0) {
+        return -1;
+    }
+
+    rocksdb_backup_engine_t* restore_be = NULL;
+
+    restore_be = rocksdb_backup_engine_open(rocksdb_obj->options, PATH_TO_ROCKSDB_BACKUP, &err);
+    if (err != NULL) {
+        fprintf(stderr, "Error opening backup engine for restore: %s\n", err);
+        rocksdb_free((void*)err);
+        return -1;
+    }
+
+    rocksdb_backup_engine_restore_db_from_latest_backup(
+        restore_be,
+        PATH_TO_ROCKSDB,
+        PATH_TO_ROCKSDB,
+        rocksdb_obj->restore_options,
+        &err
+    );
+    rocksdb_backup_engine_close(restore_be);
+    if (err != NULL) {
+        fprintf(stderr, "Error restoring rocksdb backup snapshot: %s\n", err);
+        rocksdb_free((void*)err);
+        return -1;
+    }
+
+    if (reopen_db_only() != 0) {
+        return -1;
+    }
+    if (reopen_backup_engine() != 0) {
+        return -1;
+    }
+
     return 0;
 }

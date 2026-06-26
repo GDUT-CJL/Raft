@@ -6,6 +6,7 @@ import (
 	"course/labgob"
 	"course/raft"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,6 +14,11 @@ import (
 
 func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
+	kv.mu.Lock()
+	if kv.snapshotCond != nil {
+		kv.snapshotCond.Broadcast()
+	}
+	kv.mu.Unlock()
 	kv.rf.Kill()
 	// Your code here, if desired.
 }
@@ -36,17 +42,17 @@ type KVServer struct {
 
 	// key为clientID，value是LastOperationInfo（SeqId + Reply）
 	// 客户端每次发送一个请求在server中都会给随机一个ClentId和SeqId
-	clientSeqTable     map[int64]LastOperationInfo // 客户端最后处理的序列号,处理重复请求
-	notifyChans        map[int]chan []*OpReply
-	notifyMu           sync.RWMutex
+	clientSeqTable map[int64]LastOperationInfo // 客户端最后处理的序列号,处理重复请求
+	notifyChans    map[int]chan []*OpReply
+	notifyMu       sync.RWMutex
 	snapshotInProgress bool
-	Counter            int64 // 原子计数器,用于测试
+	Counter        int64 // 原子计数器,用于测试
 	// 添加快照相关的字段
 	persister *raft.Persister
 
-	snapshotCond  *sync.Cond     // 用于快照制作的同步
-	snapshotQueue []snapshotTask // 快照任务队列
-	lastSnapshot  time.Time      // 上次快照时间，用于冷却
+	snapshotCond   *sync.Cond     // 用于快照制作的同步
+	snapshotQueue  []snapshotTask // 快照任务队列
+	lastSnapshot   time.Time      // 上次快照时间，用于冷却
 }
 
 type snapshotTask struct {
@@ -202,6 +208,17 @@ func (kv *KVServer) restoreFromSnapshot(snapshot []byte) {
 	fmt.Printf("KVServer[%d] restored from snapshot\n", kv.me)
 }
 
+func (kv *KVServer) printResourceUsage() {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	fmt.Printf("KVServer[%d] Resource: Heap=%vMB, Goroutines=%d, GC=%v\n",
+		kv.me,
+		m.Alloc/1024/1024,
+		runtime.NumGoroutine(),
+		time.Duration(m.PauseTotalNs).String())
+}
+
 func (kv *KVServer) applyTask() {
 	var lastPrintTime time.Time
 
@@ -211,6 +228,8 @@ func (kv *KVServer) applyTask() {
 			if message.SnapshotValid {
 				// Follower 收到 InstallSnapshot 后需要恢复状态机
 				kv.mu.Lock()
+				fmt.Printf("KVServer[%d] received snapshot apply msg, bytes=%d snapshotIndex=%d snapshotTerm=%d\n",
+					kv.me, len(message.Snapshot), message.SnapshotIndex, message.SnapshotTerm)
 				kv.restoreFromSnapshot(message.Snapshot)
 				if message.SnapshotIndex > kv.lastApplied {
 					kv.lastApplied = message.SnapshotIndex
@@ -226,7 +245,26 @@ func (kv *KVServer) applyTask() {
 
 				kv.mu.Lock()
 				if message.CommandIndex <= kv.lastApplied {
+					lastApplied := kv.lastApplied
+					cachedReplies, canReply := kv.getCachedRepliesLocked(message.Command)
 					kv.mu.Unlock()
+					if canReply {
+						fmt.Printf("KVServer[%d] command index %d already covered by snapshot/lastApplied=%d, replying from clientSeqTable cache\n",
+							kv.me, message.CommandIndex, lastApplied)
+						_, isLeader := kv.rf.GetState()
+						if isLeader {
+							notifyCh := kv.GetNotifyChannel(message.CommandIndex)
+							go func(ch chan []*OpReply, replies []*OpReply, idx int) {
+								select {
+								case ch <- replies:
+									time.Sleep(100 * time.Millisecond)
+									kv.RemoveNotifyChannel(idx)
+								case <-time.After(50 * time.Millisecond):
+									kv.RemoveNotifyChannel(idx)
+								}
+							}(notifyCh, cachedReplies, message.CommandIndex)
+						}
+					}
 					continue
 				}
 				kv.lastApplied = message.CommandIndex
@@ -407,6 +445,22 @@ func (kv *KVServer) RemoveNotifyChannel(index int) {
 	kv.notifyMu.Lock()
 	defer kv.notifyMu.Unlock()
 	delete(kv.notifyChans, index)
+}
+
+func (kv *KVServer) getCachedRepliesLocked(commands []raft.Op) ([]*OpReply, bool) {
+	if len(commands) == 0 {
+		return nil, false
+	}
+
+	replies := make([]*OpReply, 0, len(commands))
+	for _, op := range commands {
+		info, ok := kv.clientSeqTable[op.ClientId]
+		if !ok || info.SeqId < op.SeqId || info.Reply == nil {
+			return nil, false
+		}
+		replies = append(replies, info.Reply)
+	}
+	return replies, true
 }
 
 func (kv *KVServer) requestDuplicated(clientID, seqId int64) bool {

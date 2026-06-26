@@ -3,6 +3,7 @@ package raft
 import (
 	"bytes"
 	"course/labgob"
+	"log"
 	"time"
 )
 
@@ -14,6 +15,12 @@ func (rf *Raft) preparePersistData() []byte {
 	e.Encode(rf.votedFor)
 	rf.log.persisted(e)
 	return w.Bytes()
+}
+
+// persistDirect 直接持久化数据（只写 WAL，不写快照文件）
+// 用于 Start/RequestVote 等在锁外持久化的场景
+func (rf *Raft) persistDirect(raftstate []byte) {
+	rf.persister.SaveRaftState(raftstate)
 }
 
 func (rf *Raft) persistMeta(currentTerm, votedFor int) {
@@ -28,6 +35,18 @@ func (rf *Raft) persistMetaAndLog(currentTerm, votedFor, prevIndex int, entries 
 	rf.persister.SaveMetaAndLog(currentTerm, votedFor, prevIndex, entries)
 }
 
+func (rf *Raft) persistLocked() {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	rf.log.persisted(e)
+	raftstate := w.Bytes()
+
+	// 只写 WAL，不重复写快照文件（快照只在 Snapshot/InstallSnapshot 时写入）
+	rf.persister.SaveRaftState(raftstate)
+}
+
 // prepareCompactData 准备快照压缩所需的 Raft 状态数据（在锁内调用，不拷贝快照）
 // 快照数据由调用方直接传入，避免在锁内拷贝大块数据
 func (rf *Raft) prepareCompactData() []byte {
@@ -39,6 +58,14 @@ func (rf *Raft) prepareCompactData() []byte {
 	return w.Bytes()
 }
 
+// persistAndCompact 快照后持久化并压缩 WAL
+// 快照后旧 WAL 中的历史记录不再需要，压缩为只包含最新状态的新 WAL
+func (rf *Raft) persistAndCompact() {
+	raftstate := rf.prepareCompactData()
+	snapshot := rf.persister.ReadSnapshot()
+	rf.persister.CompactWAL(raftstate, snapshot)
+}
+
 // persistAndCompactAsync 在锁外异步执行快照持久化和 WAL 压缩
 // 调用方在锁内调用 prepareCompactData() 获取 raftstate，释放锁后调用此方法
 // snapshot 由调用方在锁外传入（避免锁内拷贝大块数据）
@@ -48,6 +75,7 @@ func (rf *Raft) persistAndCompactAsync(raftstate, snapshot []byte) {
 
 func (rf *Raft) readPersist(data []byte) {
 	if len(data) < 1 {
+		log.Printf("Raft[%d]: readPersist skipped, empty raft state", rf.me)
 		return
 	}
 	r := bytes.NewBuffer(data)
@@ -76,9 +104,15 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 
+	log.Printf("Raft[%d]: readPersist loaded raft state, currentTerm=%d votedFor=%d snapLastIdx=%d snapLastTerm=%d logSize=%d",
+		rf.me, rf.currentTerm, rf.votedFor, rf.log.snapLastIdx, rf.log.snapLastTerm, rf.log.size())
+
 	rf.log.snapshot = rf.persister.ReadSnapshot()
+	log.Printf("Raft[%d]: readPersist snapshot bytes=%d snapLastIdx=%d snapLastTerm=%d",
+		rf.me, len(rf.log.snapshot), rf.log.snapLastIdx, rf.log.snapLastTerm)
 	if rf.log.snapshot != nil && rf.log.snapLastIdx > 0 {
 		rf.snapAppending = true
+		log.Printf("Raft[%d]: readPersist triggers snapAppending=true, snapshot will be applied to state machine", rf.me)
 		rf.applyCond.Signal()
 
 		if rf.log.snapLastIdx > rf.commitIndex {
@@ -87,6 +121,9 @@ func (rf *Raft) readPersist(data []byte) {
 		if rf.log.snapLastIdx > rf.lastApplied {
 			rf.lastApplied = rf.log.snapLastIdx
 		}
+	} else {
+		log.Printf("Raft[%d]: readPersist skip snapshot apply, snapshotNil=%v snapLastIdx=%d",
+			rf.me, rf.log.snapshot == nil, rf.log.snapLastIdx)
 	}
 
 	rf.resetElectionTimerLocked()

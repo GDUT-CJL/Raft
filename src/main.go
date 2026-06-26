@@ -100,5 +100,6 @@ func main() {
 	if bm != nil {
 		bm.Stop()
 	}
+	bridge.DestoryStorage()
 	time.Sleep(1 * time.Second)
 }

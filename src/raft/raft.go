@@ -1,4 +1,4 @@
-package raft
+﻿package raft
 
 //
 // this is an outline of the API that raft must expose to
@@ -287,13 +287,15 @@ func (rf *Raft) becomeLeaderLocked() {
 	lastLogIndex := rf.log.size() - 1
 
 	for peer := 0; peer < len(rf.peers); peer++ {
-		rf.nextIndex[peer] = rf.log.size()
 		if rf.me == peer {
 			rf.matchIndex[peer] = lastLogIndex
+			rf.nextIndex[peer] = rf.log.size() // Leader 自己的
+			rf.snapSending[peer] = false
 		} else {
+			rf.nextIndex[peer] = rf.log.size()
 			rf.matchIndex[peer] = 0
+			rf.snapSending[peer] = false
 		}
-		rf.snapSending[peer] = false
 	}
 	rf.updateLease()
 	go rf.heartbeatTicker(rf.currentTerm)
@@ -372,7 +374,12 @@ func (rf *Raft) Start(command []Op) (int, int, bool) {
 // should call killed() to check whether it should stop.
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
-	// Your code here, if desired.
+	rf.mu.Lock()
+	rf.applyCond.Broadcast()
+	rf.mu.Unlock()
+	if rf.persister != nil {
+		rf.persister.Close()
+	}
 }
 
 func (rf *Raft) killed() bool {

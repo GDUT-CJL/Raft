@@ -13,19 +13,13 @@ import (
 const (
 	persistDir   = "raft-persist"
 	snapshotFile = "snapshot.bin"
+	raftStateFile = "raftstate.bin"
 	walDir       = "wal"
 )
 
-/*
-核心职责
- 1. WAL 文件的创建和管理
- 2. 快照文件的原子写入（先写 `.tmp`，`fsync` 后 `rename`）
- 3. 崩溃恢复时从 WAL 重放所有记录重建 Raft 状态
- 4. Compaction 时重建 WAL，只保留最新状态
-*/
-
 type Persister struct {
 	mu      sync.Mutex
+	me      int
 	peerDir string
 	wal     *WAL
 
@@ -55,6 +49,7 @@ func MakePersister(me int) *Persister {
 	}
 
 	return &Persister{
+		me:      me,
 		peerDir: peerDir,
 		wal:     wal,
 	}
@@ -166,12 +161,14 @@ func (ps *Persister) queueOrAppendRecords(records []WALRecord) {
 	}
 }
 
-// 写入一条 WALRecordState 记录（term + votedFor + log） 触发时机：Snapshot/InstallSnapshot 后的首次写入
 func (ps *Persister) SaveRaftState(raftstate []byte) {
 	ps.queueOrAppendRecords([]WALRecord{{Type: WALRecordState, Data: raftstate}})
+	statePath := filepath.Join(ps.peerDir, raftStateFile)
+	if err := ps.saveRaftStateFile(statePath, raftstate); err != nil {
+		log.Printf("Failed to save raftstate file: %v", err)
+	}
 }
 
-// 写入一条 WALRecordMetadata 记录（term + votedFor） 触发时机：任期变更、投票
 func (ps *Persister) SaveMeta(currentTerm, votedFor int) {
 	data, err := encodeGobRecord(persistMetaRecord{
 		CurrentTerm: currentTerm,
@@ -184,7 +181,6 @@ func (ps *Persister) SaveMeta(currentTerm, votedFor int) {
 	ps.queueOrAppendRecords([]WALRecord{{Type: WALRecordMetadata, Data: data}})
 }
 
-// 写入一条 WALRecordLogReplace 记录（prevIndex + entries） 触发时机：每次日志追加
 func (ps *Persister) SaveLogReplace(prevIndex int, entries []LogEntry) {
 	entriesCopy := make([]LogEntry, len(entries))
 	copy(entriesCopy, entries)
@@ -200,7 +196,6 @@ func (ps *Persister) SaveLogReplace(prevIndex int, entries []LogEntry) {
 	ps.queueOrAppendRecords([]WALRecord{{Type: WALRecordLogReplace, Data: data}})
 }
 
-// 写入两条记录（Meta + Log）
 func (ps *Persister) SaveMetaAndLog(currentTerm, votedFor, prevIndex int, entries []LogEntry) {
 	metaData, err := encodeGobRecord(persistMetaRecord{
 		CurrentTerm: currentTerm,
@@ -228,7 +223,6 @@ func (ps *Persister) SaveMetaAndLog(currentTerm, votedFor, prevIndex int, entrie
 	})
 }
 
-// 写入 WAL + 可选的快照文件
 func (ps *Persister) Save(raftstate []byte, snapshot []byte) {
 	ps.SaveRaftState(raftstate)
 	if len(snapshot) > 0 {
@@ -245,6 +239,7 @@ func (ps *Persister) SaveBatch(raftstate []byte, snapshot []byte) {
 
 func (ps *Persister) saveSnapshotFile(path string, data []byte) error {
 	tmpFile := path + ".tmp"
+	//log.Printf("Persister[%d]: saving snapshot file, path=%s, bytes=%d", ps.me, path, len(data))
 
 	f, err := os.Create(tmpFile)
 	if err != nil {
@@ -262,7 +257,36 @@ func (ps *Persister) saveSnapshotFile(path string, data []byte) error {
 	}
 	f.Close()
 
-	return os.Rename(tmpFile, path)
+	if err := os.Rename(tmpFile, path); err != nil {
+		return err
+	}
+	//log.Printf("Persister[%d]: snapshot file saved, path=%s, bytes=%d", ps.me, path, len(data))
+	return nil
+}
+
+func (ps *Persister) saveRaftStateFile(path string, data []byte) error {
+	tmpFile := path + ".tmp"
+	//log.Printf("Persister[%d]: saving raftstate file, path=%s, bytes=%d", ps.me, path, len(data))
+
+	f, err := os.Create(tmpFile)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	f.Close()
+
+	if err := os.Rename(tmpFile, path); err != nil {
+		return err
+	}
+	//log.Printf("Persister[%d]: raftstate file saved, path=%s, bytes=%d", ps.me, path, len(data))
+	return nil
 }
 
 func (ps *Persister) ReadRaftState() []byte {
@@ -275,7 +299,14 @@ func (ps *Persister) ReadRaftState() []byte {
 		return nil
 	}
 	if len(records) == 0 {
-		return nil
+		statePath := filepath.Join(ps.peerDir, raftStateFile)
+		data, readErr := os.ReadFile(statePath)
+		if readErr != nil {
+			log.Printf("Persister[%d]: ReadRaftState fallback miss, path=%s, err=%v", ps.me, statePath, readErr)
+			return nil
+		}
+		//log.Printf("Persister[%d]: ReadRaftState fallback ok, path=%s, bytes=%d", ps.me, statePath, len(data))
+		return data
 	}
 
 	currentTerm := 0
@@ -284,7 +315,7 @@ func (ps *Persister) ReadRaftState() []byte {
 
 	for _, rec := range records {
 		switch rec.Type {
-		case WALRecordState: //完整 Raft 状态快照（term + votedFor + log） 触发时机：Snapshot/InstallSnapshot 后的首次写入
+		case WALRecordState:
 			term, vote, replayLog, err := decodePersistState(rec.Data)
 			if err != nil {
 				log.Printf("Failed to decode state record: %v", err)
@@ -293,7 +324,7 @@ func (ps *Persister) ReadRaftState() []byte {
 			currentTerm = term
 			votedFor = vote
 			rl = replayLog
-		case WALRecordMetadata: // 元数据记录（term + votedFor） 触发时机：任期变更、投票
+		case WALRecordMetadata:
 			var meta persistMetaRecord
 			if err := labgob.NewDecoder(bytes.NewBuffer(rec.Data)).Decode(&meta); err != nil {
 				log.Printf("Failed to decode meta record: %v", err)
@@ -301,7 +332,7 @@ func (ps *Persister) ReadRaftState() []byte {
 			}
 			currentTerm = meta.CurrentTerm
 			votedFor = meta.VotedFor
-		case WALRecordLogReplace: // 增量日志记录（prevIndex + entries） 触发时机：每次日志追加
+		case WALRecordLogReplace:
 			var replace persistLogReplaceRecord
 			if err := labgob.NewDecoder(bytes.NewBuffer(rec.Data)).Decode(&replace); err != nil {
 				log.Printf("Failed to decode log replace record: %v", err)
@@ -321,13 +352,15 @@ func (ps *Persister) ReadSnapshot() []byte {
 	snapPath := filepath.Join(ps.peerDir, snapshotFile)
 	data, err := os.ReadFile(snapPath)
 	if err != nil {
+		log.Printf("Persister[%d]: ReadSnapshot miss, path=%s, err=%v", ps.me, snapPath, err)
 		return nil
 	}
+	log.Printf("Persister[%d]: ReadSnapshot ok, path=%s, bytes=%d", ps.me, snapPath, len(data))
 	return data
 }
 
-// 压缩 WAL，重建为新文件
 func (ps *Persister) CompactWAL(raftstate []byte, snapshot []byte) {
+	//log.Printf("Persister[%d]: CompactWAL start, raftstateBytes=%d snapshotBytes=%d", ps.me, len(raftstate), len(snapshot))
 	ps.mu.Lock()
 	ps.compacting = true
 	oldWAL := ps.wal
@@ -352,6 +385,11 @@ func (ps *Persister) CompactWAL(raftstate []byte, snapshot []byte) {
 		log.Printf("Failed to write initial WAL record after compaction: %v", err)
 	}
 
+	statePath := filepath.Join(ps.peerDir, raftStateFile)
+	if err := ps.saveRaftStateFile(statePath, raftstate); err != nil {
+		log.Printf("Failed to save raftstate during compaction: %v", err)
+	}
+
 	if len(snapshot) > 0 {
 		snapPath := filepath.Join(ps.peerDir, snapshotFile)
 		if err := ps.saveSnapshotFile(snapPath, snapshot); err != nil {
@@ -371,6 +409,7 @@ func (ps *Persister) CompactWAL(raftstate []byte, snapshot []byte) {
 			log.Printf("Failed to flush pending WAL records after compaction: %v", err)
 		}
 	}
+	//log.Printf("Persister[%d]: CompactWAL done, pendingRecords=%d", ps.me, len(pending))
 }
 
 func (ps *Persister) Close() {
@@ -378,7 +417,9 @@ func (ps *Persister) Close() {
 	defer ps.mu.Unlock()
 
 	if ps.wal != nil {
+		log.Printf("Persister[%d]: closing WAL", ps.me)
 		ps.wal.Close()
+		ps.wal = nil
 	}
 }
 

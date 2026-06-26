@@ -7,13 +7,18 @@ extern "C" {
 
 // 定义你的函数和结构体  
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <errno.h>
 #include <unistd.h>
 #include <ctype.h>
 #include <stdarg.h> // for va_list
+#include <stdint.h>
 #include "rocksdb/c.h" // for rockdb
 
 // ------------------------------ cgo_log -------------------------------- //
@@ -227,7 +232,6 @@ int kvs_rocksdb_batch_set(const char** keys, const char** values, int count);
 
 
 /*------------------------------ mempool --------------------------------------*/
-#include <stdint.h>
 void* kvs_malloc(size_t size);
 void kvs_free(void* ptr);
 // mempool
@@ -283,8 +287,14 @@ int jl_flush_to_disk(jl_pool_t* pool, const char* filename);
 
 /*------------------------------ Snapshot --------------------------------------*/
 // 快照数据结构
+typedef enum storage_engine_kind_e {
+    STORAGE_ENGINE_LEGACY = 0,
+    STORAGE_ENGINE_ROCKSDB = 1,
+} storage_engine_kind_t;
+
 typedef struct storage_snapshot_s {
     uint32_t version;
+    uint32_t engine_type;
     uint64_t timestamp;
 } storage_snapshot_t;
 
@@ -292,6 +302,8 @@ typedef struct storage_snapshot_s {
 int storage_create_snapshot(char** snapshot_data, size_t* snapshot_size);
 int storage_restore_snapshot(const char* snapshot_data, size_t snapshot_size);
 void storage_free_snapshot(char* snapshot_data);
+int storage_set_active_engine(int engine_type);
+int storage_get_active_engine(void);
 
 // 各个数据结构的快照函数
 int array_snapshot(char** data, size_t* size);
@@ -308,6 +320,9 @@ int btree_restore(const char* data, size_t size);
 
 int skiplist_snapshot(char** data, size_t* size);
 int skiplist_restore(const char* data, size_t size);
+
+int rocksdb_snapshot(char** data, size_t* size);
+int rocksdb_restore(const char* data, size_t size);
 
 #ifdef __cplusplus  
 }  
